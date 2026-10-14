@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Raw data, caches and Run output are rebuilt by the pipeline
+/data
+/experiments/
+/logs/
+
+# Figures are rebuilt by the scripts beside them
+figures/*.pdf
