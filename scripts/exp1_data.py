@@ -1,15 +1,12 @@
 """Experiment 1's data plane: dataset keys, rosters, per-bank ledgers, and the pooled
 network-sight tables.
 
-Datasets are the six keys of extract.py plus the eleven other released AMLgentex
-datasets, all read through extract.py's canonical frames. ``PRIMARY`` holds
-HI-Medium, HI-Small and the two controls; ``ANCHOR_ONLY`` holds LI-Small and
-LI-Medium, which take only the global Runs that the comparison with published
-scores reads; ``SENSITIVITY`` holds the eleven others, read from the AMLgentex
-manifest on first use so that the module imports before the data are
-fetched. A roster is a dataset's qualifying banks: those with at least
-``MIN_TEST_POS`` laundering payments in their test set, the payment rail
-excluded on AMLworld. A bank's ledger (the payments touching it, all splits,
+Datasets are the six keys of extract.py, read through its canonical frames.
+``PRIMARY`` holds HI-Medium, HI-Small and the two controls; ``ANCHOR_ONLY``
+holds LI-Small and LI-Medium, which take only the global Runs that the
+comparison with published scores reads. A roster is a dataset's qualifying
+banks: those with at least ``MIN_TEST_POS`` laundering payments in their test
+set, the payment rail excluded on AMLworld. A bank's ledger (the payments touching it, all splits,
 canonical order, with the canonical payment index) is cached once per dataset
 under ``data/interim/exp1/ledgers`` so per-bank workers never load a whole
 world (a derived cache; delete it and it rebuilds). The two account dictionaries are compacted to the ledger's own
@@ -18,11 +15,9 @@ are unchanged by it, since both are computed from the union of the two columns.
 """
 from __future__ import annotations
 
-import functools
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
@@ -34,12 +29,10 @@ import pyarrow.parquet as pq  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from extract import (AMLGENTEX_DATASET, DATASETS as EXTRACT_DATASETS,  # noqa: E402
-                        amlgentex_frame, table_path)
-from extract import frame as extract_frame  # noqa: E402
+from extract import AMLGENTEX_DATASET, DATASETS, frame, table_path  # noqa: E402
 from m.features import extract, usd_rate_table  # noqa: E402
 from m.runlog import REPO_ROOT  # noqa: E402
-from m.worlds import amlgentex, amlworld  # noqa: E402
+from m.worlds import amlworld  # noqa: E402
 
 MIN_TEST_POS = 30
 PRIMARY = ["HI-Medium", "HI-Small", "transxion", AMLGENTEX_DATASET]
@@ -48,36 +41,12 @@ CONTROLS = ["transxion", AMLGENTEX_DATASET]
 LEDGERS = REPO_ROOT / "data" / "interim" / "exp1" / "ledgers"
 
 
-@functools.cache
-def _sensitivity() -> tuple[str, ...]:
-    return tuple(sorted(n for n in amlgentex.released_names() if n != AMLGENTEX_DATASET))
-
-
-@functools.cache
-def _datasets() -> dict[str, tuple[str, str]]:
-    return dict(EXTRACT_DATASETS) | {name: ("amlgentex", name) for name in _sensitivity()}
-
-
-def __getattr__(name: str):
-    if name == "SENSITIVITY":
-        return list(_sensitivity())
-    if name == "DATASETS":
-        return _datasets()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def world_of(key: str) -> str:
-    return _datasets()[key][0]
+    return DATASETS[key][0]
 
 
 def excluded_banks(key: str) -> list[str]:
     return [amlworld.RAIL_BANK] if world_of(key) == "amlworld" else []
-
-
-def frame(key: str) -> pd.DataFrame:
-    if key in EXTRACT_DATASETS:
-        return extract_frame(key)
-    return amlgentex_frame(key)
 
 
 def global_table(key: str) -> Path:
@@ -184,16 +153,3 @@ def read_rates(key: str) -> dict[str, float]:
 
 def read_ledger(key: str, bank: str) -> pd.DataFrame:
     return pd.read_parquet(ledger_path(key, bank))
-
-
-def main() -> int:
-    for key in sys.argv[1:] or PRIMARY + ANCHOR_ONLY:
-        t0 = time.time()
-        table = write_ledgers(key)
-        print(f"{key}: {len(table)} banks cached in {time.time() - t0:.0f}s "
-              f"-> {ledger_dir(key)}", flush=True)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

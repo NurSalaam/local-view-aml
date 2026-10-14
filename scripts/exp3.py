@@ -128,7 +128,7 @@ def inputs_metrics(run_dir: Path, done: dict) -> dict:
                              (path / "status.json").read_text())["config_hash"],
                          "roster_order_matches": True,
                          "standard_error_reproduced": reproduced,
-                         "descriptor_banks": int(len(aligned)),
+                         "property_banks": int(len(aligned)),
                          "delta_inside_interval": float(
                              ((target["delta"] >= target["ci_lo"])
                               & (target["delta"] <= target["ci_hi"])).mean())})
@@ -170,13 +170,13 @@ def screen_metrics(run_dir: Path, done: dict) -> dict:
         for name in desc.NAMES:
             x = table[f"log1p_{name}"].to_numpy(np.float64)
             rows.append({
-                "family": family, "descriptor": name,
+                "family": family, "property": name,
                 "group": next(g for g, members in desc.GROUPS.items() if name in members),
                 "rho": rank.spearman(x, target),
                 "rho_partial_scale": (np.nan if name in SCALE
                                       else rank.partial_spearman(x, target, scale)["rho"])})
 
-    table = pd.DataFrame(rows).set_index(["family", "descriptor"])
+    table = pd.DataFrame(rows).set_index(["family", "property"])
     return {"dataset_key": dd.FIT_KEY, "k": int(len(values)),
             "seconds": time.time() - t0,
             "artifacts": {"screen": write_csv(run_dir, "screen", table)}}
@@ -215,7 +215,7 @@ def holdout_metrics(family: str, run_dir: Path, done: dict) -> dict:
                          index=target_table.index)
 
     return {"family": family, "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "k": int(len(target)), "rule": desc.BASELINE, "descriptors": list(SCALE),
+            "k": int(len(target)), "rule": desc.BASELINE, "properties": list(SCALE),
             "rho": rank.spearman(prediction, target),
             "seconds": time.time() - t0,
             "artifacts": {"holdout": write_csv(run_dir, "holdout", banks),
@@ -335,7 +335,7 @@ def ceiling_descriptor_metrics(run_dir: Path) -> dict:
             "homophily_rank_agreement_with_neighbourhood_size": rank.spearman(
                 table["class_homophily_with_rail"].to_numpy(),
                 table["mean_neighbourhood"].to_numpy()),
-            "descriptor": summary, "seconds": time.time() - t0,
+            "quantity": summary, "seconds": time.time() - t0,
             "artifacts": {"ceiling_descriptors": write_csv(
                 run_dir, "ceiling_descriptors", table)}}
 
@@ -349,17 +349,9 @@ def ceiling_config(family: str, done: dict) -> dict:
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
                                  "label_using": len(CEILING_CANDIDATES)},
-            "protocol": "the folds, fitting rule, ranking metric and choice rule of "
-                        "the selection of the rules on label-free properties, unchanged",
-            "price": "the best-scoring label-using candidate's mean out-of-fold "
-                     "correlation minus the chosen label-free rule's; a ceiling is a "
-                     "maximum, so it is read off the best score and not off the "
-                     "parsimony-favouring choice rule, whose own winner is recorded "
-                     "beside it",
-            "beside_it": "the same reading over the label-using candidates that exclude "
-                         "the test base rate, since average precision's chance level "
-                         "is that base rate, so the quantity shares the target's "
-                         "arithmetic",
+            "protocol": "the folds, fitting rule, ranking metric and comparison "
+                        "with the scale rule of the rules on label-free "
+                        "properties, unchanged",
             "inputs": {**_inputs((family,), (dd.FIT_KEY,), done),
                        "ceiling_descriptors": config_hash(ceiling_descriptor_config())},
             "ceiling_version": lab.VERSION, "rule_version": rule.VERSION,
@@ -384,57 +376,36 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
                                        repeats=rule.REPEATS, n_folds=rule.N_FOLDS)
         per_repeat = np.array([rank.spearman(row, target) for row in predictions])
         results[candidate.name] = {"score": float(per_repeat.mean()),
-                                   "repeat_sd": float(per_repeat.std(ddof=1)),
                                    "predictions": predictions,
                                    "prediction": predictions.mean(axis=0)}
     score = {name: results[name]["score"] for name in CEILING_ORDER}
-    best = rule.best_by_score(CEILING_ORDER, score)
-    leader = results[best]["predictions"]
+    best = max(CEILING_ORDER, key=score.get)
     baseline = results[desc.BASELINE]["predictions"]
-    paired = {name: rank.bootstrap_repeat_mean_difference(
-        results[name]["predictions"], leader, target,
-        draws=BOOTSTRAP_DRAWS, seed=SEED)["sd"] for name in CEILING_ORDER}
     against_baseline = {name: rank.bootstrap_repeat_mean_difference(
         results[name]["predictions"], baseline, target,
         draws=BOOTSTRAP_DRAWS, seed=SEED) for name in CEILING_ORDER}
-    size = {candidate.name: len(candidate.descriptors) for candidate in CEILING_CANDIDATES}
-    chosen = rule.choose(CEILING_ORDER, score, paired, size, desc.BASELINE,
-                         {n: bool(against_baseline[n]["q05"] > 0) for n in CEILING_ORDER})
+    beaters = [name for name in CEILING_ORDER
+               if name != desc.BASELINE and against_baseline[name]["q05"] > 0]
 
-    without_base_rate = [name for name in CEILING_ORDER
-                         if "test_base_rate" not in
-                         {c.name: c.descriptors for c in CEILING_CANDIDATES}[name]]
-    best_without_base_rate = rule.best_by_score(without_base_rate, score)
-
-    selection = json.loads((_selection_run(family, done) / "metrics.json").read_text())
-    label_free_score = selection["winner_score"]
-    rows = [{"candidate": name, "descriptors": " ".join(
+    rows = [{"candidate": name, "terms": " ".join(
         {c.name: c.descriptors for c in CEILING_CANDIDATES}[name]),
-             "n_descriptors": size[name], "score": score[name],
-             "repeat_sd": results[name]["repeat_sd"], "paired_sd_vs_leader": paired[name],
+             "score": score[name],
              "delta_vs_baseline": against_baseline[name]["delta"],
              "q05_vs_baseline": against_baseline[name]["q05"],
-             "ceiling": name == best,
-             "choice_winner": name == chosen["winner"]} for name in CEILING_ORDER]
+             "outperforms": name in beaters,
+             "ceiling": name == best} for name in CEILING_ORDER]
     oof = pd.DataFrame({name: results[name]["prediction"] for name in CEILING_ORDER},
                        index=target_table.index)
     oof.insert(0, "delta", target)
 
     return {"family": family, "dataset_key": dd.FIT_KEY, "k": int(len(target)),
             "ceiling_rule": best, "ceiling_score": score[best],
-            "ceiling_reading": "the best-scoring label-using candidate, since a ceiling "
-                               "is a maximum; the choice rule's own winner is recorded "
-                               "beside it and is not the ceiling",
-            "ceiling_rule_without_base_rate": best_without_base_rate,
-            "ceiling_score_without_base_rate": score[best_without_base_rate],
-            "label_free_rule": selection["choice"]["winner"],
-            "label_free_score": label_free_score,
-            "price_of_label_freeness": float(score[best] - label_free_score),
-            "price_without_base_rate": float(
-                score[best_without_base_rate] - label_free_score),
+            "ceiling_reading": "the rule that uses labels with the highest "
+                               "out-of-fold rho",
+            "outperform_the_scale_rule": beaters,
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
                                  "label_using": len(CEILING_CANDIDATES)},
-            "choice": chosen, "seconds": time.time() - t0,
+            "seconds": time.time() - t0,
             "artifacts": {"candidates": write_csv(
                 run_dir, "candidates", pd.DataFrame(rows).set_index("candidate")),
                 "oof": write_csv(run_dir, "oof", oof)}}
@@ -561,7 +532,7 @@ def bank_facing_metrics(family: str, run_dir: Path, done: dict) -> dict:
 
     return {"family": family, "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
             "k": int(len(held)),
-            "descriptors": list(BANK_FACING),
+            "terms": list(BANK_FACING),
             "coefficients": coefficient_table["value"].to_dict(),
             "fitted_range_payment_count": list(fitted_range),
             "ceiling_oof_score": float(candidates.loc["scale+laundering_count",
@@ -613,12 +584,8 @@ def cmd(stage: str, done: dict) -> None:
                       lambda config, run_dir, f=family:
                       ceiling_metrics(f, run_dir, done), done=done)
             print(f"ceiling {family}: {out['ceiling_rule']} at rho "
-                  f"{out['ceiling_score']:+.4f} against the label-free "
-                  f"{out['label_free_score']:+.4f} — price "
-                  f"{out['price_of_label_freeness']:+.4f}; without the base rate "
-                  f"{out['ceiling_rule_without_base_rate']} at "
-                  f"{out['ceiling_score_without_base_rate']:+.4f} "
-                  f"(price {out['price_without_base_rate']:+.4f})", flush=True)
+                  f"{out['ceiling_score']:+.4f}; outperform the scale rule: "
+                  f"{out['outperform_the_scale_rule'] or 'none'}", flush=True)
     elif stage == "bank_facing":
         metrics = run(EXPERIMENT, bank_facing_counts_config(),
                       lambda config, run_dir: bank_facing_counts_metrics(run_dir),

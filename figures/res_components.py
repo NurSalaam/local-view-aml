@@ -38,7 +38,7 @@ RED, GREY = "#c2352c", "#c3bfb6"
 ROWS = (
     ("examples", "Value of training examples", "(ledger, qualifying) − (ledger, own)"),
     ("sight", "Value of sight", "(network, qualifying) − (ledger, qualifying)"),
-    ("stub", "Extending the pool to every bank", "(network, all) − (network, qualifying)"),
+    ("pool_extension", "Extending the pool to every bank", "(network, all) − (network, qualifying)"),
 )
 FAMILIES = (("tree", "Tree family"), ("gnn", "GNN family"))
 

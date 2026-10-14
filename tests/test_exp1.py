@@ -29,7 +29,7 @@ from m.lgbdata import (RepeatedRowsSequence, RowGroupReader, construct,  # noqa:
                        fit_grid, predict_matrix, predict_rows, repeat_index)
 from m.stats import (aggregate_shortfalls, heterogeneity, joint_bootstrap,  # noqa: E402
                      leave_one_out, null_q_check, spearman_bank_bootstrap,
-                     weighted_average_precision, weighted_roc_auc)
+                     weighted_average_precision)
 
 
 class TestStreamedCopies(unittest.TestCase):
@@ -190,8 +190,8 @@ class TestStatistics(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.default_rng(0)
 
-    def test_weighted_metrics_match_sklearn(self):
-        from sklearn.metrics import average_precision_score, roc_auc_score
+    def test_weighted_average_precision_matches_sklearn(self):
+        from sklearn.metrics import average_precision_score
 
         for _ in range(3):
             n = 400
@@ -201,8 +201,6 @@ class TestStatistics(unittest.TestCase):
             w[y == 1] += 1
             self.assertAlmostEqual(weighted_average_precision(y, s, w[None])[0],
                                    average_precision_score(y, s, sample_weight=w), places=9)
-            self.assertAlmostEqual(weighted_roc_auc(y, s, w[None])[0],
-                                   roc_auc_score(y, s, sample_weight=w), places=9)
 
     def test_null_check_calibrates_under_the_null(self):
         k, R = 30, 2000
@@ -243,14 +241,14 @@ class TestStatistics(unittest.TestCase):
                 self.assertGreater(agg[g]["delta"], 0)
                 self.assertGreater(agg[g]["se_boot"], 0)
         again = joint_bootstrap(n_test, groups, replicates=40, seed=0, chunk=16)
-        self.assertTrue(np.array_equal(again["reps"]["auc"]["1"], boot["reps"]["auc"]["1"]))
+        self.assertTrue(np.array_equal(again["reps"]["ap_common"]["1"],
+                                       boot["reps"]["ap_common"]["1"]))
 
     def test_spearman_bootstrap_reads_direction(self):
         a = self.rng.random(40)
-        out = spearman_bank_bootstrap(a, a + 0.1 * self.rng.random(40), draws=200,
-                                      permutations=500)
+        out = spearman_bank_bootstrap(a, a + 0.1 * self.rng.random(40), draws=200)
         self.assertTrue(out["positive"])
-        out = spearman_bank_bootstrap(a, self.rng.random(40), draws=200, permutations=500)
+        out = spearman_bank_bootstrap(a, self.rng.random(40), draws=200)
         self.assertLess(out["boot_q05"], out["rho"] + 1e-9)
 
 

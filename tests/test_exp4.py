@@ -1,5 +1,6 @@
-"""Experiment 4 machinery on toy values: the choice and the abstain rule at one
-bank, and the independence of each reading's seed-noise draws.
+"""Experiment 4 machinery on toy values: the choice and the comparison with the
+own detector at one bank, and the independence of each reading's seed-noise
+draws.
 
 Run:  uv run python -m unittest tests.test_exp4 -v
 """
@@ -28,7 +29,7 @@ class TestChoice(unittest.TestCase):
             exp4_analysis.choose({"020": 0.3, "000": 0.6, "011": 0.5}, 0.4),
             ("000", True))
 
-    def test_abstains_when_its_own_detector_scores_as_high(self):
+    def test_keeps_its_own_detector_when_it_scores_as_high(self):
         self.assertEqual(exp4_analysis.choose({"020": 0.3, "000": 0.6}, 0.6),
                          ("000", False))
         self.assertEqual(exp4_analysis.choose({"020": 0.3, "000": 0.6}, 0.7),

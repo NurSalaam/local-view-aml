@@ -1,10 +1,9 @@
 """The label-free properties, the rule machinery, and the rank statistics.
 
 Every property against a hand-computed value on a ledger small enough to
-check by eye; the folds against their definition; the choice among the rules
-against each line it can be decided on; the partial rank correlation against
-an independent route through the precision matrix; and the conditional
-permutation's size under a null it is meant to survive. Neither torch nor
+check by eye; the folds against their definition; the partial rank
+correlation against an independent route through the precision matrix; and
+the conditional permutation's size under a null it is meant to survive. Neither torch nor
 LightGBM is imported here, as in the scripts.
 
 Run:  uv run python -m unittest tests.test_descriptors -v
@@ -135,48 +134,6 @@ class Candidates(unittest.TestCase):
         self.assertEqual(coefficients[1], 0.0)
 
 
-class Choice(unittest.TestCase):
-    """The baseline is chosen unless another rule outperforms it; among the
-    rules that do, parsimony and candidate order decide."""
-
-    order = ["scale", "rich", "other", "richer"]
-    size = {"scale": 2, "rich": 2, "other": 2, "richer": 3}
-    none_beat = dict.fromkeys(order, False)
-    all_beat = {"scale": False, "rich": True, "other": True, "richer": True}
-
-    def choose(self, score, paired, beats):
-        return rule.choose(self.order, score, paired, self.size, "scale", beats)
-
-    def test_the_baseline_stands_when_nothing_beats_it(self) -> None:
-        out = self.choose({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.80},
-                          dict.fromkeys(self.order, 0.01), self.none_beat)
-        self.assertEqual(out["winner"], "scale")
-        self.assertEqual(out["decided_by"], "the baseline stands unbeaten")
-        self.assertEqual(out["beaters"], [])
-
-    def test_a_clear_winner_that_beats_the_baseline_wins_on_score(self) -> None:
-        out = self.choose({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.45},
-                          dict.fromkeys(self.order, 0.01), self.all_beat)
-        self.assertEqual(out["winner"], "rich")
-        self.assertEqual(out["decided_by"], "score")
-
-    def test_parsimony_breaks_a_tie(self) -> None:
-        out = self.choose({"scale": 0.50, "rich": 0.51, "other": 0.30, "richer": 0.52},
-                          {"scale": 0.0, "rich": 0.05, "other": 0.0, "richer": 0.0},
-                          self.all_beat)
-        self.assertEqual(out["tied"], ["rich", "richer"])
-        self.assertEqual(out["winner"], "rich")
-        self.assertEqual(out["decided_by"], "parsimony")
-
-    def test_candidate_order_breaks_a_remaining_tie(self) -> None:
-        out = self.choose({"scale": 0.50, "rich": 0.51, "other": 0.515, "richer": 0.40},
-                          {"scale": 0.0, "rich": 0.05, "other": 0.0, "richer": 0.0},
-                          self.all_beat)
-        self.assertEqual(out["tied"], ["rich", "other"])
-        self.assertEqual(out["winner"], "rich")
-        self.assertEqual(out["decided_by"], "candidate order")
-
-
 class RankStatistics(unittest.TestCase):
     def test_spearman_matches_scipy(self) -> None:
         from scipy.stats import spearmanr
@@ -203,21 +160,13 @@ class RankStatistics(unittest.TestCase):
             want = -precision[0, 1] / np.sqrt(precision[0, 0] * precision[1, 1])
             self.assertAlmostEqual(got, want, places=10)
 
-    def test_permutation_p_is_never_zero(self) -> None:
-        x = np.arange(30.0)
-        out = rank.permutation_p(x, x, alternative="greater", draws=199, seed=0)
-        self.assertGreater(out["p"], 0.0)
-        self.assertAlmostEqual(out["p"], 1 / 200)
-
     def test_an_undefined_correlation_is_not_evidence(self) -> None:
         """A variable with no variation, and one the controls explain exactly,
         both give NaN and a p-value of 1 — never the smallest p the permutation
         resolution allows."""
         z = np.arange(60.0)
         y = np.random.default_rng(8).normal(size=60)
-        flat = rank.permutation_p(np.ones(60), y, draws=99, seed=0)
-        self.assertTrue(np.isnan(flat["rho"]))
-        self.assertEqual(flat["p"], 1.0)
+        self.assertTrue(np.isnan(rank.spearman(np.ones(60), y)))
         for x in (np.ones(60), z):
             out = rank.conditional_permutation_p(x, y, z, draws=99, seed=0)
             self.assertTrue(np.isnan(out["rho"]))
@@ -246,9 +195,9 @@ class RankStatistics(unittest.TestCase):
     def test_conditional_permutation_holds_its_size(self) -> None:
         """Under a null where the two variables are independent given the control
         but both driven by it through a hostile monotone transform, the
-        conditional test keeps its level where the t-approximation does not."""
+        conditional test keeps its level."""
         rng = np.random.default_rng(6)
-        conditional, asymptotic = 0, 0
+        conditional = 0
         trials = 200
         for _ in range(trials):
             z = rng.normal(size=107)
@@ -258,9 +207,7 @@ class RankStatistics(unittest.TestCase):
             out = rank.conditional_permutation_p(x, y, z, draws=299,
                                                  seed=int(rng.integers(1 << 30)))
             conditional += out["p_conditional"] <= 0.10
-            asymptotic += out["p_asymptotic"] <= 0.10
         self.assertLess(conditional / trials, 0.20)
-        self.assertGreater(asymptotic / trials, conditional / trials)
 
 
 class Neighbourhood(unittest.TestCase):

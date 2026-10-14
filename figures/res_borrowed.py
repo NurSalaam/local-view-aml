@@ -3,12 +3,13 @@
 Data: Experiment 4, the `policy` checks on HI-Medium for the tree and
 GNN families. Each check's `banks.csv` gives per bank its shortfall from
 Experiment 1 (`delta_exp1`), the gain of the detector it ends with over its own
-(`policy_gain`, zero where it abstained) and its quarter by confirmed cases
-(`quartile`). Runs are found by scanning Experiment 4's Run log. The weighted
-mean gain and the weighted mean shortfall over the first quarter are recomputed
-with the weights 1/s_B^2 and asserted against the recorded
-`primary.weighted_mean` and `threshold.weighted_mean_shortfall`; their ratio is
-the share of the shortfall recovered that the caption quotes.
+(`policy_gain`, zero where it keeps its own detector), whether it borrows
+(`borrow`) and its quarter by confirmed cases (`quartile`). Runs are found by
+scanning Experiment 4's Run log. The weighted mean gain and the weighted mean
+shortfall over the first quarter are recomputed with the weights 1/s_B^2 and
+asserted against the recorded `primary.weighted_mean` and
+`threshold.weighted_mean_shortfall`; their ratio is the share of the shortfall
+recovered that the caption quotes.
 """
 import json
 from pathlib import Path
@@ -96,6 +97,6 @@ for family, _, _ in FAMILIES:
     name, banks, share = cells[family]
     first = banks[banks.quartile == 1]
     print(family, name, "banks", len(banks), "first quarter", len(first),
-          "abstained", int((banks.policy_gain == 0).sum()),
+          "keep their own detector", int((~banks["borrow"]).sum()),
           "gain below zero", int((banks.policy_gain < 0).sum()),
           f"share of the shortfall recovered {share:.2f}")

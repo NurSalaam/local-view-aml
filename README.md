@@ -8,8 +8,7 @@ bank's *shortfall*, the cost of that local view: the average precision on the
 bank's test set of a detector with the global view, which sees every bank's
 payments and learns from every bank's confirmed cases, less that of the bank's
 own detector. The measurements use six synthetic datasets from three
-generators (AMLworld, TransXion and AMLgentex), and eleven further AMLgentex
-datasets on which banks can differ only by chance. Four experiments answer the
+generators (AMLworld, TransXion and AMLgentex). Four experiments answer the
 thesis's three research questions:
 
 - **RQ1.** How large is the shortfall at each bank, how does it vary across
@@ -37,8 +36,8 @@ every Run, cache and figure from it.
   the TransXion fetch.
 - Kaggle API credentials (`~/.kaggle/access_token`, or `KAGGLE_USERNAME` and
   `KAGGLE_KEY`), for the AMLworld fetch.
-- About 27 GB of disk for the raw data, about 20 GB for the derived caches
-  under `data/interim/` and about 6 GB for the Run log under `experiments/`.
+- About 8 GB of disk for the raw data, about 13 GB for the derived caches
+  under `data/interim/` and about 4.5 GB for the Run log under `experiments/`.
 
 Every experiment ran on the CPU of one Apple M4 Pro computer with 24 GB of
 memory. The launchers' default budgets (`--budget 14 --machine-gb 24`) match
@@ -66,10 +65,7 @@ the Run configs; `exp1.py`, `exp2.py`, `exp4.py`, `exp1_analysis.py`,
 `exp1_readings.py` and `exp2_analysis.py` refuse other values. Experiments 1
 and 4 fix the GNN's loader workers at 0, and the GNN selection refuses any
 `M_GNN_WORKERS`, `M_TORCH_THREADS` or `M_DEVICE` other than its defaults (0, 4
-and `cpu`). The anchor check (`checks_anchor_gnn.py`) is the exception: it
-trains with 2 loader workers and 10 torch threads, the settings of the
-study's anchor Runs. Like every script, it runs on the CPU unless `M_DEVICE`
-names another device.
+and `cpu`).
 
 ## Data
 
@@ -91,7 +87,7 @@ uv run python scripts/fetch_transxion.py
 | Dataset | Source | Size | Destination |
 |---|---|---|---|
 | AMLworld (Altman et al., 2024) | Kaggle `ealtman2019/ibm-transactions-for-anti-money-laundering-aml`: the four payments files and `HI-Medium_Patterns.txt` | ~7.1 GB | `data/raw/ibm-aml/` |
-| AMLgentex (Östman et al., 2025) | `tx_log.csv` of twelve Hugging Face repositories under `huggingface.co/AMLGentex`, each pinned to a revision in the script | ~19.2 GB | `data/raw/amlgentex/<name>/` |
+| AMLgentex (Östman et al., 2025) | `tx_log.csv` of the Hugging Face repository `huggingface.co/datasets/AMLGentex/sweden_100K_easy`, pinned to a revision in the script | ~634 MB | `data/raw/amlgentex/sweden_100K_easy/` |
 | TransXion (Chen et al., 2026) | `github.com/chaos-max/TransXion` at commit `53932595c37c23b9f55ea5ddf5984e4d57b88369` (`data/tx.csv`, in Git LFS) | ~250 MB | `data/raw/transxion/` |
 
 ## Pipeline
@@ -118,10 +114,8 @@ times its Runs recorded; the stages without a time were not timed.
    uv run python scripts/extract.py
    ```
 
-2. **Data checks** (`experiments/checks`, about 2 h, mostly the GNN anchor).
-   The census of each dataset, the never-seen-counterparty cue, the placebo,
-   and the GNN anchor: the GNN family's starting configuration fitted on
-   HI-Small at three seeds, which the GNN selection's gate reads.
+2. **Data checks** (`experiments/checks`). The census of each dataset, the
+   never-seen-counterparty cue and the placebo.
 
    ```sh
    uv run python scripts/checks_census_amlworld.py
@@ -129,38 +123,35 @@ times its Runs recorded; the stages without a time were not timed.
    uv run python scripts/checks_census_amlgentex.py
    uv run python scripts/checks_frame_probe.py
    uv run python scripts/checks_placebo.py
-   uv run python scripts/checks_anchor_gnn.py
    ```
 
-3. **GNN selection** (`experiments/select_gnn`, about 3.5 h). The search for
-   the GNN family's configuration: the gate, at which candidate 1, fitted at
-   the anchor's hyperparameters, must score within the range of the anchor's
-   three seeds widened by one standard deviation at each end; the screen of
-   candidates 2 to 6 at one seed; the two finalists at two further seeds; and
-   the verdict. Experiment 1 adopts the
-   winner's Runs as HI-Small's detector with the global view in the GNN
-   family, and stops if the winner's configuration differs from its own.
+3. **GNN selection** (`experiments/select_gnn`, about 3 h). The search for
+   the GNN family's configuration: the screen of the six candidates at one
+   seed, the two finalists at two further seeds, and the verdict. Experiment
+   1 adopts the winner's Runs as HI-Small's detector with the global view in
+   the GNN family, and stops if the winner's configuration differs from its
+   own.
 
    ```sh
-   uv run python scripts/select_gnn.py launch gate
-   uv run python scripts/select_gnn.py gate
    uv run python scripts/select_gnn.py launch screen
    uv run python scripts/select_gnn.py launch commit
    uv run python scripts/select_gnn.py verdict
    ```
 
 4. **Experiment 1: The shortfall at each bank** (`experiments/exp1`, about
-   21 h). The per-bank ledgers; two checks of the code paths (the streamed
+   17 h). The per-bank ledgers; two checks of the code paths (the streamed
    tree table must reproduce the in-memory one, and Experiment 1's GNN
    inputs must reproduce the GNN selection's scores on HI-Small); the bank's
    own detector and the detector with the global view, in the tree and GNN
-   families, on HI-Medium, HI-Small, the two controls and the eleven other
-   AMLgentex datasets; the detector with the global view alone on LI-Small
-   and LI-Medium; and the blind tree, as the bank's own detector at every
-   qualifying bank of HI-Medium and with the global view on HI-Medium and the
-   AMLgentex dataset. Then the shortfall Runs, the verdict on hypothesis 1 and
-   the robustness readings; `scores` prints the measured scores beside the
-   published ones.
+   families, on HI-Medium, HI-Small and the two controls; the detector with
+   the global view alone on LI-Small and LI-Medium; and the blind tree, as the
+   bank's own detector at every qualifying bank of HI-Medium and with the
+   global view on HI-Medium and the AMLgentex dataset. Then the shortfall
+   Runs and the verdict on hypothesis 1, which together hold the robustness
+   readings, and two further readings: τ about the line on size, and each
+   scenario scored at its own best configuration. `scores` prints the measured
+   scores of the table of measured and published scores; the published scores
+   are quoted from Altman et al. (2024) and Chen et al. (2026).
 
    ```sh
    uv run python scripts/exp1.py launch
@@ -187,8 +178,9 @@ times its Runs recorded; the stages without a time were not timed.
 6. **Experiment 3: Rules on the ledger** (`experiments/exp3`, under an hour).
    The check on the label-free properties, the properties of every qualifying
    bank of HI-Medium and HI-Small, and the out-of-fold scores of the sixteen
-   rules on them, whose choice (`choice` in each `selection` Run) gives the
-   verdict on hypothesis 2; then the check on the shortfall tables read, the
+   rules on them, whose comparison with the scale rule gives the verdict on
+   hypothesis 2 (`outperform_the_scale_rule` and `hypothesis_2` in each
+   `selection` Run); then the check on the shortfall tables read, the
    partial rank correlations, the scale rule applied to HI-Small, the rules
    that use labels, and the rule on scale and confirmed cases applied to
    HI-Small.
@@ -202,7 +194,8 @@ times its Runs recorded; the stages without a time were not timed.
    under an hour). The lenders, the check that the transfer path reproduces
    each GNN lender's own scores, and the transfer cells on HI-Medium and
    HI-Small; then one policy Run per dataset and family (the choice, the
-   abstain rule and the gain at each bank) and the verdict on hypothesis 3.
+   comparison with the own detector and the gain at each bank) and the
+   verdict on hypothesis 3.
    The analysis reads Experiment 2's `components` and `examples` Runs.
 
    ```sh
@@ -235,22 +228,24 @@ columns. Each stands for one thesis term.
 | `clocal`, `cglobal`, `nown` | (ledger, qualifying), (network, qualifying), (network, own) |
 | `gnn_cglobaldup`, `sightcheck` | (network, qualifying) with the count held equal, and the value of sight read with it |
 | `components`, `secondpath` | the decomposition of the shortfall along path 1 and along path 2 |
+| `examples`, `sight`, `pool_extension`, `total` (components) | the value of training examples with sight held at the ledger, the value of sight with the qualifying banks' training examples in place, extending the pool to every bank, and the shortfall |
+| `sight_own`, `examples_network`, `interaction` | the value of sight at the own training examples, the value of training examples at network sight, and the interaction |
 | `dial` | the case reduction |
-| `examples` | confirmed cases across banks |
+| `examples` (check) | confirmed cases across banks |
 | `never_seen_split`: `never_seen`, `rest` | the two parts of each test set: the first part, whose counterparty appears nowhere in the bank's ledger before the test window, and the remainder |
 | `quartile` | a quarter of the qualifying banks by their number of confirmed cases |
 | `roster` | the qualifying banks |
 | `train_pos`, `test_pos` | confirmed cases; laundering payments in the test set |
 | `delta`, `se` | the shortfall and its error bar |
 | `blind` | the blind tree |
-| `paired_vs_naive` | each scenario read at its own best configuration |
-| `roster_fifty` | the banks with at least fifty laundering payments in their test set |
+| `own_best` | each scenario scored at its own best configuration |
 | `residual_after_size` | τ about the line on size |
 | `descriptors` | the label-free properties |
+| `scale`, `baseline` | the scale rule |
 | `selection` | the sixteen rules on label-free properties, scored out of fold |
 | `ceiling` | the rules that use labels |
 | `bank_facing` | the rule on scale and confirmed cases |
-| `policy`, `transfer`, `lender` | the choice and abstain rule, a borrowed detector's scores, a lender |
+| `policy`, `transfer`, `lender` | the choice and the comparison with the own detector, a borrowed detector's scores, a lender |
 
 ## Where each part of the thesis comes from
 
@@ -259,32 +254,46 @@ Each row names the scripts that write the Runs a section reads, and the
 
 | Thesis | Producers | Run directory |
 |---|---|---|
-| Ch. 3, Data: the census table and the census | `checks_census_amlworld.py`, `checks_census_transxion.py`, `checks_census_amlgentex.py` (payments, bank identifiers, qualifying banks, laundering payments per bank in the test set, the AMLgentex rows dropped, the shares of payments within one bank); `checks_frame_probe.py` (the never-seen-counterparty cue); `facts.py exp1` (`roster`: the payments in a qualifying bank's ledger and its confirmed cases); `facts.py thesis` (`census`: the laundering rates and the 41 to 153 laundering payments per bank on the difficult AMLgentex datasets; `over_chance_range`; `rail`: the payment rail) | `checks`, `exp1`, `facts` |
-| Ch. 3, The measurement: the shortfall, the four scenarios and the row rule | `figures/meth_scenarios.py` (the figure of the four scenarios and the counts its caption quotes, from Experiment 1's HI-Small ledgers); `facts.py thesis` (`neighbourhood`: the same counts); `facts.py exp1` (`roster`: the laundering payments in a test set) | `exp1`, `facts` |
-| Ch. 3, The measurement: pairing and error bars | `exp1_analysis.py shortfall`, with `src/m/stats.py` (each bank's shortfall, its error bar and the common laundering rate, as in the algorithm of the section) | `exp1` |
-| Ch. 3, The detectors | `src/m/features.py` (the tree family's 101 columns); `src/m/gnn.py` (the GNN family); `src/m/grid.py` and `exp1.py` (`GNN`) (the table of hyperparameters); `facts.py thesis` (`always_zero`: the AMLgentex dataset's columns that are always zero); `select_gnn.py` (the choice of the GNN configuration) | `exp1`, `select_gnn`, `facts` |
-| Ch. 3, Checks on the measurement | `exp1_analysis.py scores` (the measured scores beside the published ones: `test_f1_x100` and `test_ap` of each detector with the global view; the tree family and the blind tree at their configuration of highest validation average precision, the GNN family as the mean over its three seeds, HI-Small's GNN Runs from the GNN selection); `checks_placebo.py` (the placebo) | `exp1`, `select_gnn`, `checks` |
-| Ch. 4, Experiment 1 | `exp1.py`, `exp1_analysis.py` (`shortfall`, `verdict`), `exp1_readings.py` (`residual`, `paired`, `fifty`); `facts.py exp1` (`spread`, `per_seed`, `tau`, `readings`, `size`, `chance`, `roster`) | `exp1`, `facts` |
-| Ch. 4, Experiment 2 | `exp2.py`, `exp2_analysis.py` (`components`, `secondpath`, `sightcheck`, `dial`), `exp2_examples.py` (`examples`); `facts.py exp2` (`components` with its `quartiles`, `secondpath`, `sightcheck`, `qualifying`, `never_seen_split`, `pool`, `copies`, `banks`, `placebo`, `reduction`); `facts.py thesis` (`quarters`: the weighted means of the table of the shortfall by quarter) | `exp2`, `facts` |
-| Ch. 5, Experiment 3, and App. D, Methods and checks for ranking the banks by their shortfall | `exp3_descriptors.py` (the check on the properties, `descriptors`, `selection`), `exp3.py` (`inputs`, `screen`, `holdout`, `ceiling`, `bank_facing`); `facts.py thesis` (`typology`, `rho_payments_active_accounts`, `shared_accounts`) | `exp3`, `facts` |
-| Ch. 6, Experiment 4 | `exp4.py`, `exp4_analysis.py` (`policy`, `verdict`); `facts.py exp4` (`recovery`); `facts.py thesis` (`quarters`, `single_lender`, `without_abstain`, `line`, `largest`, `lenders`) | `exp4`, `facts` |
-| Ch. 7 and 8, and the abstract | the numbers of the rows above, as `facts.py exp1`, `exp2`, `exp4` and `thesis` record them | `facts` |
-| App. A, Data | `fetch_ibm_aml.py`, `fetch_amlgentex_released.py`, `fetch_transxion.py`; `facts.py thesis` (`census`: the AMLgentex dataset's laundering rate) | none (manifests under `data/raw/`), `facts` |
-| App. B, Detectors | `src/m/features.py` (the tree family's columns); `checks_anchor_gnn.py`, `select_gnn.py` (the search for the GNN family's configuration) | `checks`, `select_gnn` |
-| App. C, Methods and checks for the shortfall across banks | `exp1_analysis.py` (`shortfall`, `verdict`: the three tests, the null check and the factors on the error bars), `exp1_readings.py`, `exp2_analysis.py` (`components`, `secondpath`, `sightcheck`, `dial`), `exp2_examples.py`; `facts.py exp1` (`tau`, `spread`, `chance`, `per_seed`); `facts.py exp2` (`qualifying`, `never_seen_split`, `placebo`, `copies`, `reduction`); `facts.py thesis` (`interaction_tree`: the interaction formed three ways) | `exp1`, `exp2`, `facts` |
+| Ch. 3 §3.1, Data: the conventions, the census table, the shares of payments within one bank and the never-seen-counterparty cue | `checks_census_amlworld.py`, `checks_census_transxion.py`, `checks_census_amlgentex.py` (payments, bank identifiers, qualifying banks, laundering payments per bank in the test set, the AMLgentex rows dropped, the shares of payments within one bank); `checks_frame_probe.py` (the never-seen-counterparty cue); `facts.py exp1` (`roster`: the payments in a qualifying bank's ledger and its confirmed cases); `facts.py thesis` (`census`: the laundering rates; `over_chance_range`; `rail`: the payment rail) | `checks`, `exp1`, `facts` |
+| Ch. 3 §3.2.1 to §3.2.3, The measurement: the shortfall, the four scenarios and the row rule | `figures/meth_scenarios.py` (the figure of the four scenarios and the counts its caption quotes, from Experiment 1's HI-Small ledgers); `facts.py exp1` (`roster`: the laundering payments in a test set) | `exp1`, `facts` |
+| Ch. 3 §3.2.4, Pairing and error bars | `exp1_analysis.py shortfall`, with `src/m/stats.py` (each bank's shortfall, its error bar and the common laundering rate, as in the section's algorithm) | `exp1` |
+| Ch. 3 §3.3, The detectors | `src/m/features.py` (the tree family's 101 columns); `src/m/gnn.py` (the GNN family); `src/m/grid.py` and `exp1.py` (`GNN`) (the table of hyperparameters); `facts.py thesis` (`always_zero`: the AMLgentex dataset's columns that are always zero); `select_gnn.py` (the choice of the GNN configuration) | `exp1`, `select_gnn`, `facts` |
+| Ch. 3 §3.4, Checks on the measurement | `exp1_analysis.py scores` (the measured scores of the table of measured and published scores: `test_f1_x100` and `test_ap` of each detector with the global view, the tree family at its configuration of highest validation average precision, the GNN family as the mean over its three seeds, HI-Small's GNN Runs from the GNN selection, and the blind tree on the AMLgentex dataset; the published scores are quoted from Altman et al. and Chen et al.); `checks_placebo.py` (the placebo) | `exp1`, `select_gnn`, `checks` |
+| Ch. 4 §4.1, Experiment 1 | `exp1.py`; `exp1_analysis.py` (`shortfall`, `verdict`); `exp1_readings.py` (`paired`: each scenario scored at its own best configuration, §4.1.2; `residual`: τ about the line on size, §4.1.3); `facts.py exp1` (`spread`, `per_seed`, `tau`, `readings`, `size`, `controls`, `roster`) | `exp1`, `facts` |
+| Ch. 4 §4.2, Experiment 2 | `exp2.py`; `exp2_analysis.py` (`components`, `secondpath`, `sightcheck`, `dial`); `exp2_examples.py` (`examples`: the shortfall by confirmed cases and the partial rank correlation); `facts.py exp2` (`components` with its `quartiles`, `secondpath`, `sightcheck`, `qualifying`, `never_seen_split`, `pool`, `copies`, `banks`, `placebo`, `reduction`); `facts.py exp1` (`roster`: ρ between confirmed cases and size); `facts.py thesis` (`quarters`: the weighted means of the table of the shortfall by quarter; `largest`: the fewest confirmed cases among the thirty qualifying banks with the most payments, §4.2.3) | `exp1`, `exp2`, `facts` |
+| Ch. 5 §5.1, Experiment 3 | `exp3_descriptors.py` (the check on the properties; `descriptors`; `selection`: the out-of-fold ρ of the sixteen rules, each one's difference from the scale rule, the rules that outperform it, and the verdict on hypothesis 2 as its `hypothesis_2`); `exp3.py` (`inputs`: the check on the shortfall tables read; `screen`: each property's rank correlation with the shortfall, raw and with scale held fixed; `ceiling`: the rule on scale and confirmed cases out of fold; `holdout` and `bank_facing`: the scale rule and the rule on scale and confirmed cases applied to HI-Small) | `exp3` |
+| Ch. 6 §6.1, Experiment 4 | `exp4.py` (the lenders, the check that the transfer path reproduces each GNN lender's own scores, and the transfer cells); `exp4_analysis.py` (`policy`: the choice, the comparison with the own detector and the gain at each bank, the weighted means and their intervals, the medians by quarter and the validation counts; `verdict`); `facts.py exp4` (`recovery`: the gain as a share of the shortfall and of the value of training examples, §6.1.2); `facts.py thesis` (`lenders` and `line`, §6.1.1; `quarters`: the table of the gain by quarter, §6.1.3; `single_lender` and `every_bank_borrows`: the readings with a single lender and in which every bank borrows, §6.1.4) | `exp4`, `facts` |
+| Ch. 7 and 8, and the abstract | the numbers of the rows above, as `facts.py exp1`, `exp2`, `exp4` and `thesis` record them; `facts.py thesis` (`largest`: the qualifying banks among the thirty with the most payments, by each measure of size, §7.3) | `facts` |
+| App. A, Data | `fetch_ibm_aml.py`, `fetch_amlgentex_released.py`, `fetch_transxion.py` (the files read and their digests); `checks_census_amlgentex.py` (the AMLgentex dataset's twelve banks and 112 daily steps); `facts.py thesis` (`census`: the AMLgentex dataset's laundering rate) | none (manifests under `data/raw/`), `checks`, `facts` |
+| App. B.1, The tree family's columns | `src/m/features.py` | none |
+| App. B.2, The search for the GNN family's configuration | `select_gnn.py` (the six candidates, the two finalists at three seeds and the choice) | `select_gnn` |
+| App. C.1, The three tests | `exp1_analysis.py` (`shortfall`: the null check, leave one out and the tests at each seed; `verdict`: the GNN family's null-check 95th percentile on HI-Medium and the AMLgentex dataset, redrawn 200 times); `facts.py exp1` (`spread`, `per_seed`, `controls`); `figures/app_null.py` | `exp1`, `facts` |
+| App. C.2, The standard deviation of the true shortfalls | `exp1_readings.py residual` (τ about the line on size); `facts.py exp1` (`tau`; `spread`: the standard deviation of the shortfalls and the median error bar, and `tau_terms`: the two terms of τ and the standard deviation of the shortfalls weighted by w_B) | `exp1`, `facts` |
+| App. C.3, The agreement between the two families | `exp1_analysis.py verdict` (ρ, its 5th percentile and its 95 % interval over 1,000 redraws of the banks); `figures/app_rho.py` | `exp1` |
+| App. C.4, The robustness readings | `exp1_analysis.py` (`shortfall`: `common_rate`, and the shortfall on HI-Small; `verdict`: `robustness`, the factors on the error bars on HI-Medium and HI-Small); `facts.py exp1` (`tau`: `common_rate` and `HI-Small`; `roster`: the common laundering rate) | `exp1`, `facts` |
+| App. C.5, Scoring at each scenario's own best configuration | `exp1_readings.py paired` (the tree family and the blind tree: the weighted means, the changes of sign and ρ); `facts.py exp1` (`readings`: `own_best`, the gain from choosing each scenario's configuration) | `exp1`, `facts` |
+| App. C.6, The decomposition of the shortfall | `exp2_analysis.py` (`components`, `secondpath`, `sightcheck`); `facts.py exp2` (`components`, `banks`, `secondpath`, `sightcheck`, `copies`, `placebo`, `never_seen_split`, `qualifying`); `facts.py thesis` (`interaction_tree`: the interaction formed three ways) | `exp2`, `facts` |
+| App. C.7, The case reduction | `exp2.py` (the reduced fits); `exp2_analysis.py dial`; `facts.py exp2` (`reduction`); `figures/app_level100.py` | `exp2`, `facts` |
+| App. C.8, The partial rank correlation | `exp2_examples.py` (`examples`: the partial rank correlations and their shuffles); `facts.py exp1` (`roster`: ρ between training-window payments and size); `figures/app_partial.py` (constructed values) | `exp1`, `exp2`, `facts` |
+| App. D.1, The properties | `src/m/descriptors.py`; `exp3_descriptors.py` (the check on the properties; `descriptors`: each property's range); `exp3.py screen` (each property's rank correlation with the shortfall, raw and with scale held fixed); `facts.py thesis` (`shared_accounts`: the account numbers that occur at two banks) | `exp3`, `facts` |
+| App. D.2, The out-of-fold ρ | `exp3_descriptors.py` (`selection`: each rule's out-of-fold ρ, its ten values and the fit without weights); `figures/app_oof.py` (constructed values) | `exp3` |
+| App. D.3, The comparison with the scale rule | `exp3_descriptors.py` (`selection`: each rule's difference from the scale rule, its 5th percentile and its standard deviation over 1,000 redraws of the banks) | `exp3` |
+| App. D.4, The rules that use labels | `src/m/ceiling.py` (the six quantities computed from labels); `exp3.py` (`ceiling`: the nine rules, and the homophily of cases with the rail left in; `holdout` and `bank_facing`: the scale rule and the rule on scale and confirmed cases, fitted on the 107 banks, with their coefficients, and applied to HI-Small); `facts.py thesis` (`typology`: the share of confirmed cases that the record of injected typologies names; `rho_payments_active_accounts`) | `exp3`, `facts` |
 
 A few quoted values are read directly from a named artefact rather than
 computed by a facts block: the fit times on HI-Medium and its counts of
 training-window payments and copies (the `seconds` and `rows` of Experiment
 1's `gnn_global` and `tree_global` Runs on HI-Medium); banks 0272142 and
-008904 (Experiment 1's `shortfall` Run on HI-Medium in the tree family, its
+008904, and the shortfalls and error bars of banks 0143079 and 0293268
+(Experiment 1's `shortfall` Run on HI-Medium in the tree family, its
 `banks.csv` and `roster.csv`); bank 0143079's scores of 0.140 and 0.957
-(Experiment 2's `components` Run in the tree family, `banks.csv`); the boundary
-share of exactly 1 at 51 banks (the `descriptors` Run of HI-Medium,
-`descriptors.csv`); the ten values of the scale rule's out-of-fold ρ (the
-`selection` Runs, `candidates.csv`, `score_r0` to `score_r9`); and the HI-Small
-lenders left out of the GNN family's choice (the `excluded` block of
-Experiment 4's `transfer_gnn` Runs on HI-Small).
+(Experiment 2's `components` Run in the tree family, `banks.csv`); bank 020's
+scores at each level of the case reduction (Experiment 2's `dial` Runs, their
+`banks` block); the boundary share of exactly 1 at 51 banks (the `descriptors`
+Run of HI-Medium, `descriptors.csv`); the ten values of the scale rule's
+out-of-fold ρ (the `selection` Runs, `candidates.csv`, `score_r0` to
+`score_r9`); and the HI-Small lenders left out of the GNN family's choice (the
+`excluded` block of Experiment 4's `transfer_gnn` Runs on HI-Small).
 
 ## Facts
 
@@ -309,18 +318,18 @@ recorded, it asserts that the two agree.
 
 | Script | Figure | Reads |
 |---|---|---|
-| `meth_scenarios.py` | Ch. 3: the four scenarios over one neighbourhood of HI-Small | Experiment 1 ledgers |
-| `res_shortfalls.py` | Ch. 4: the shortfall at each bank of HI-Medium | `exp1` shortfall |
-| `res_size.py` | Ch. 4: the shortfall and the bank's size | `exp1` shortfall |
-| `res_components.py` | Ch. 4: the value of training examples and of sight at each bank | `exp2` components |
-| `res_reduction.py` | Ch. 4: the score with fewer confirmed cases | `exp2` dial |
-| `res_rules.py` | Ch. 5: the out-of-fold ρ of each rule | `exp3` selection, ceiling |
-| `res_borrowed.py` | Ch. 6: the gain from borrowing and the shortfall at each bank | `exp4` policy |
-| `app_null.py` | App. C: the null check on two combinations | `exp1` shortfall |
-| `app_rho.py` | App. C: the two families' rankings of HI-Medium's banks | `exp1` shortfall, verdict |
-| `app_level100.py` | App. C: the score with 100 confirmed cases | `exp2` dial |
-| `app_partial.py` | App. C: a partial rank correlation on six banks | constructed values |
-| `app_oof.py` | App. D: out-of-fold predictions on six banks | constructed values |
+| `meth_scenarios.py` | Ch. 3 §3.2.2: the four scenarios over one neighbourhood of HI-Small | Experiment 1 ledgers |
+| `res_shortfalls.py` | Ch. 4 §4.1.2: the shortfall at each bank of HI-Medium | `exp1` shortfall |
+| `res_size.py` | Ch. 4 §4.1.3: the shortfall and the bank's size | `exp1` shortfall |
+| `res_components.py` | Ch. 4 §4.2.2: the value of training examples and of sight at each bank | `exp2` components |
+| `res_reduction.py` | Ch. 4 §4.2.4: the score with fewer confirmed cases | `exp2` dial |
+| `res_rules.py` | Ch. 5 §5.1.2: the out-of-fold ρ of each rule | `exp3` selection, ceiling |
+| `res_borrowed.py` | Ch. 6 §6.1.2: the gain from borrowing and the shortfall at each bank | `exp4` policy |
+| `app_null.py` | App. C.1: the null check on two combinations | `exp1` shortfall |
+| `app_rho.py` | App. C.3: the two families' rankings of HI-Medium's banks | `exp1` shortfall, verdict |
+| `app_level100.py` | App. C.7: the score with 100 confirmed cases | `exp2` dial |
+| `app_partial.py` | App. C.8: a partial rank correlation on six banks | constructed values |
+| `app_oof.py` | App. D.2: out-of-fold predictions on six banks | constructed values |
 
 ## Tests
 

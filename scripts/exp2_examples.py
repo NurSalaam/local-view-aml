@@ -2,8 +2,8 @@
 """Experiment 2's reading of confirmed cases across banks (Chapter 4). Analysis
 only: no model trains. One ``examples`` Run per family (tree, GNN) correlates
 the bank's number of confirmed cases (its training-window laundering payments)
-with its Experiment 1 shortfall, raw and with size held fixed, and groups the
-banks into quarters by their number of confirmed cases. The config cites the
+with its Experiment 1 shortfall, raw and with size held fixed, and assigns
+each bank its quarter by its number of confirmed cases. The config cites the
 shortfall Run's hash, so a re-done input re-keys the reading; skip-if-done is
 by config hash.
 
@@ -35,7 +35,7 @@ import exp1_analysis  # noqa: E402
 import exp1_data as data  # noqa: E402
 from m import completed, run  # noqa: E402
 from m.artifacts import verify, write_csv  # noqa: E402
-from m.rank import conditional_permutation_p, permutation_p  # noqa: E402
+from m.rank import conditional_permutation_p, spearman  # noqa: E402
 from m.runlog import config_hash, experiments_root  # noqa: E402
 
 EXPERIMENT = "exp2"
@@ -50,10 +50,8 @@ NEVER_SEEN = ("a cross-bank test payment whose counterparty account -- the "
               "-- appears on none of the bank's training- or "
               "validation-window rows; a payment between two of the bank's "
               "own accounts has no counterparty and is never never-seen")
-CORRELATIONS = ("Spearman rho with a two-sided permutation p over "
-                f"{PERMUTATIONS} bank permutations at seed {SEED}; the "
-                "partial by rank residualisation with the conditional "
-                f"within-block permutation (width {BLOCK_WIDTH}, "
+CORRELATIONS = ("Spearman rho; the partial by rank residualisation with the "
+                f"conditional within-block permutation (width {BLOCK_WIDTH}, "
                 f"{PERMUTATIONS} draws at seed {SEED}), holding fixed the "
                 "log of the bank's training-window rows")
 
@@ -97,14 +95,11 @@ def counterparty_view(bank: str) -> dict:
 
 def correlation_block(x: np.ndarray, delta: np.ndarray,
                       log_rows: np.ndarray) -> dict:
-    raw = permutation_p(x, delta, alternative="two-sided",
-                        draws=PERMUTATIONS, seed=SEED)
     partial = conditional_permutation_p(x, delta, log_rows, width=BLOCK_WIDTH,
                                         draws=PERMUTATIONS, seed=SEED)
-    return {"k": int(len(x)), "rho": raw["rho"], "p": raw["p"],
+    return {"k": int(len(x)), "rho": spearman(x, delta),
             "partial_rho": partial["rho"],
-            "partial_p_conditional": partial["p_conditional"],
-            "partial_p_asymptotic": partial["p_asymptotic"]}
+            "partial_p_conditional": partial["p_conditional"]}
 
 
 # ------------------------------------------------------------- examples --
@@ -118,9 +113,8 @@ def examples_config(family: str, shortfall: tuple[Path, dict]) -> dict:
                          "train_pos, either-endpoint attribution)",
             "target": "the bank's Experiment 1 shortfall (banks.csv delta)",
             "statistics": CORRELATIONS,
-            "quartiles": "pandas qcut over the count, four bins; per "
-                         "quartile the count range, the unweighted mean "
-                         "shortfall, and the banks below zero",
+            "quartiles": "pandas qcut over the count, four bins, as the "
+                         "examples.csv quartile column (0 holds the fewest)",
             "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(KEY)},
             "inputs": {"shortfall": _hash_of(shortfall[0])}}
 
@@ -137,18 +131,8 @@ def examples_metrics(family: str, shortfall: tuple[Path, dict],
     log_rows = np.log(table["train_rows"].to_numpy(np.float64))
     correlation = correlation_block(train_pos, delta, log_rows)
     table["quartile"] = pd.qcut(table["train_pos"], 4, labels=False)
-    quartiles = []
-    for q, group in table.groupby("quartile"):
-        quartiles.append({
-            "quartile": int(q) + 1,
-            "count_range": [int(group["train_pos"].min()),
-                            int(group["train_pos"].max())],
-            "banks": int(len(group)),
-            "mean_shortfall": float(group["delta"].mean()),
-            "banks_negative": int((group["delta"] < 0).sum())})
     return {"dataset_key": KEY, "family": family, "k": len(table),
             "correlation_with_shortfall": correlation,
-            "quartile_table": quartiles,
             "artifacts": {"examples": write_csv(run_dir, "examples", table)}}
 
 
@@ -163,12 +147,8 @@ def cmd_examples(family: str, done: dict | None = None) -> dict | None:
                                                            run_dir),
                   done=done)
     c = metrics["correlation_with_shortfall"]
-    cells = ", ".join(f"{q['count_range'][0]}-{q['count_range'][1]}: "
-                      f"{q['mean_shortfall']:+.3f} ({q['banks_negative']} neg)"
-                      for q in metrics["quartile_table"])
-    print(f"examples {family}: rho {c['rho']:+.3f} (p {c['p']:.4f}) partial "
-          f"{c['partial_rho']:+.3f} (p {c['partial_p_conditional']:.4f}) "
-          f"quartiles {cells}", flush=True)
+    print(f"examples {family}: rho {c['rho']:+.3f} partial "
+          f"{c['partial_rho']:+.3f} (p {c['partial_p_conditional']:.4f})", flush=True)
     return metrics
 
 

@@ -26,16 +26,6 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-def sha256_of_array(array: np.ndarray) -> str:
-    """The digest :func:`write_array` would record, without writing the file,
-    so an array held in memory can be compared with one another Run persisted."""
-    import io
-
-    buffer = io.BytesIO()
-    np.lib.format.write_array(buffer, array, allow_pickle=False)
-    return hashlib.sha256(buffer.getvalue()).hexdigest()
-
-
 def _record(path: Path) -> dict[str, Any]:
     return {"file": path.name, "sha256": sha256_of(path),
             "bytes": path.stat().st_size}

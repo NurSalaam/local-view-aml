@@ -3,7 +3,9 @@
 and one ``verdict`` Run on hypothesis 1 over the shortfall Runs. Both are pure
 functions over the Run log; an analysis config lists its inputs' config
 hashes, so a re-done input re-keys the analysis. ``scores`` prints the
-measured scores beside the published ones (Chapter 3) from the global Runs.
+measured scores of the table of measured and published scores (Chapter 3)
+from the global Runs; the published scores are quoted from Altman et al. and
+Chen et al.
 
   uv run python scripts/exp1_analysis.py shortfall <key> <family>
   uv run python scripts/exp1_analysis.py all          # every complete cell
@@ -41,8 +43,8 @@ REPLICATES = 1000
 CHUNK = 100
 SEED = 0
 NULL_LEVEL = 0.95
-LOW_BAND, SUBSTANTIAL_BAND = 0.25, 0.50
-SPEARMAN = {"draws": 1000, "permutations": 10_000, "seed": 0}
+I2_THRESHOLD = 0.25
+SPEARMAN = {"draws": 1000, "seed": 0}
 PAIRING = {"tree": "median_over_grid", "blind": "median_over_grid",
            "gnn": "mean_over_seeds"}
 AGGREGATE = {"median_over_grid": "median", "mean_over_seeds": "mean"}
@@ -51,8 +53,10 @@ SCORE_KEYS = ("HI-Small", "HI-Medium", "LI-Small", "LI-Medium", "transxion",
               data.AMLGENTEX_DATASET)
 
 STABILITY_DRAWS = 200
-CONTROL_FIRES_WHEN = ("I2 >= 0.25, the assumption-free null check passes, and "
-                      "leave-one-out I2 >= 0.25 — criterion 1's three tests")
+STABILITY_CELLS = ((exp1.PRIMARY_KEY, "gnn"), (data.AMLGENTEX_DATASET, "gnn"))
+ROBUSTNESS_KEYS = (exp1.PRIMARY_KEY, "HI-Small")
+THREE_TESTS = ("I2 >= 0.25, the null check passes, and I2 >= 0.25 without the "
+               "bank of largest weight")
 
 
 # --------------------------------------------------------------- inputs --
@@ -89,7 +93,7 @@ def shortfall_config(key: str, family: str, dirs: dict) -> dict:
               "null_check": {"level": NULL_LEVEL, "form": "centred joint "
                              "replicates" + (" plus normal seed noise of "
                                              "variance seed_var/3" if family == "gnn" else "")},
-              "bands": {"low": LOW_BAND, "substantial": SUBSTANTIAL_BAND},
+              "i2_test": I2_THRESHOLD,
               "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(key)},
               "inputs": {"global": [_hash_of(d) for d in dirs["global"]],
                          "solo": {b: [_hash_of(d) for d in ds]
@@ -189,17 +193,18 @@ def global_levels(dirs: dict, family: str) -> dict:
 
 # ------------------------------------------------------------ analysis --
 
-def band(i2: float) -> str:
-    return "low" if i2 < LOW_BAND else ("moderate" if i2 < SUBSTANTIAL_BAND else "substantial")
-
-
 def heterogeneity_reading(labels, deltas, ses, delta_reps, seed_var=None) -> dict:
     het = heterogeneity(deltas, ses)
     null = null_q_check(delta_reps, deltas, ses, seed_var, seed=SEED, level=NULL_LEVEL)
     loo = leave_one_out(labels, deltas, ses)
-    return {**het, "band": band(het["I2"]), "null_check": null, "leave_one_out": loo,
-            "clears_low_band": bool(het["I2"] >= LOW_BAND),
-            "loo_clears_low_band": bool(loo["I2"] >= LOW_BAND)}
+    return {**het, "null_check": null, "leave_one_out": loo,
+            "passes_i2_test": bool(het["I2"] >= I2_THRESHOLD),
+            "passes_leave_one_out": bool(loo["I2"] >= I2_THRESHOLD)}
+
+
+def passes_three_tests(reading: dict) -> bool:
+    return bool(reading["passes_i2_test"] and reading["null_check"]["passes"]
+                and reading["passes_leave_one_out"])
 
 
 def shortfall_metrics(key: str, family: str, dirs: dict, run_dir: Path) -> dict:
@@ -258,17 +263,17 @@ def shortfall_metrics(key: str, family: str, dirs: dict, run_dir: Path) -> dict:
                     r = heterogeneity_reading(labels, d_s, se_s, reps_s)
                     per_setting_ses[s] = se_s
                     per_seed.append({"seed": exp1.SEEDS[s], "I2": r["I2"], "Q": r["Q"],
-                                     "band": r["band"], "clears_low_band": r["clears_low_band"],
+                                     "passes_i2_test": r["passes_i2_test"],
                                      "null_passes": r["null_check"]["passes"],
-                                     "loo_clears_low_band": r["loo_clears_low_band"],
+                                     "passes_leave_one_out": r["passes_leave_one_out"],
                                      "weighted_mean": r["weighted_mean"]})
                 pooled = readings["ap"]
                 verdict = lambda c, n, o: (bool(c), bool(n), bool(o))  # noqa: E731
-                pooled_verdict = verdict(pooled["clears_low_band"], pooled["null_check"]["passes"],
-                                         pooled["loo_clears_low_band"])
+                pooled_verdict = verdict(pooled["passes_i2_test"], pooled["null_check"]["passes"],
+                                         pooled["passes_leave_one_out"])
                 for p in per_seed:
-                    p["verdict"] = list(verdict(p["clears_low_band"], p["null_passes"],
-                                                p["loo_clears_low_band"]))
+                    p["verdict"] = list(verdict(p["passes_i2_test"], p["null_passes"],
+                                                p["passes_leave_one_out"]))
                 readings["ap"]["per_seed"] = per_seed
                 readings["ap"]["pooled_verdict"] = list(pooled_verdict)
                 readings["ap"]["per_seed_agree"] = all(
@@ -289,7 +294,7 @@ def shortfall_metrics(key: str, family: str, dirs: dict, run_dir: Path) -> dict:
             "n_test": int(cell["n_test"]), "common_base_rate": cell["common_base_rate"],
             "pairing": PAIRING[family], "replicates": REPLICATES,
             "primary": readings["ap"],
-            "sensitivity": {m: readings[m] for m in METRICS if m != "ap"},
+            "common_rate": readings["ap_common"],
             "global_level": global_levels(dirs, family),
             "solo_level": {"ap_median_over_banks": float(np.median(table["solo_ap"])),
                            "ap_range": [float(table["solo_ap"].min()),
@@ -331,76 +336,63 @@ def verdict_config(cells: dict) -> dict:
             "primary_dataset": exp1.PRIMARY_KEY, "controls": data.CONTROLS,
             "families": list(VERDICT_FAMILIES),
             "criteria": {
-                "1": f"{exp1.PRIMARY_KEY}, both families: I2 >= 0.25, null check "
-                     "passes, leave-one-out I2 >= 0.25; the GNN family's reading "
-                     "also holds on each of its seeds in turn",
+                "1": f"{exp1.PRIMARY_KEY}, both families: {THREE_TESTS}; the GNN "
+                     "family's spread also passes them at each of its seeds in turn",
                 "2": f"{exp1.PRIMARY_KEY} tree-vs-GNN Spearman rho: bank-bootstrap "
                      "5th percentile > 0",
-                "3": "no control fires for either family on TransXion or "
-                     f"sweden_100K_easy, where a control fires when {CONTROL_FIRES_WHEN}"},
-            "spearman": SPEARMAN, "bands": {"low": LOW_BAND},
+                "3": "on neither control, TransXion or the AMLgentex dataset, does "
+                     f"either family's spread pass all three tests: {THREE_TESTS}"},
+            "spearman": SPEARMAN, "i2_test": I2_THRESHOLD,
             "outcomes": {"supported": "all three criteria hold",
                          "refuted": "any criterion fails"},
-            "robustness": "per reading, the common misstatement factor c of every "
-                          "s_B at which the reading first fails a line of the triple: "
-                          "c_null = sqrt(Q / null_q95), c_band = sqrt(0.75 Q / (k-1)), "
-                          "c_loo the same on the leave-one-out reading; binding = min "
-                          "over the lines that are defined. Exact where s_B is the "
-                          "bootstrap standard error alone; a lower bound for the GNN "
-                          "family, whose s_B also carries between-seed variance",
-            "null_stability": {"draws": STABILITY_DRAWS, "seeds": "0 to "
+            "robustness": {"datasets": list(ROBUSTNESS_KEYS),
+                           "factor": "the common factor c by which every error bar "
+                                     "would have to widen before the spread fails "
+                                     "one of the three tests: c_null = sqrt(Q / "
+                                     "null_q95), c_i2 = sqrt(0.75 Q / (k-1)), c_loo "
+                                     "the same without the bank of largest weight; "
+                                     "smallest = the least of the three"},
+            "null_stability": {"cells": [f"{k}/{f}" for k, f in STABILITY_CELLS],
+                               "draws": STABILITY_DRAWS, "seeds": "0 to "
                                f"{STABILITY_DRAWS - 1}",
-                               "note": "the null's 95th percentile redrawn; "
-                                       "deterministic for the tree family"},
+                               "note": "the null check's draws for the variation "
+                                       "between seeds made afresh"},
             "inputs": {k: {f: h for f, h in fams.items()} for k, fams in cells.items()}}
 
 
 def robustness(reading: dict, seed_noise_share: float | None = None) -> dict:
-    """The factor by which every s_B would have to be misstated for this
-    heterogeneity reading to fall to each line of the triple (the robustness
-    table). Scaling every s_B by c divides Q by c-squared while the
-    assumption-free null holds still, its replicates widening by c as its
-    weights fall by c-squared. A factor below 1 says the reading already fails
-    that line, and how far past it the reading sits.
+    """The common factor c by which every error bar would have to widen
+    before the spread fails each of the three tests (the table of factors).
+    Widening every s_B by c divides Q by c-squared while the null check's 95th
+    percentile holds still, its resampled shortfalls widening by c as their
+    weights fall by c-squared. ``smallest`` is the least of the three.
 
-    ``seed_noise_share`` is the median share of s_B-squared that the
-    between-seed term contributes (the GNN family). Where it is given, s_B is
-    not the bootstrap standard error alone, so the factor is a lower bound on
-    what the resampling conjecture would require of the bootstrap component by
-    itself; where it is absent the factor prices that conjecture exactly. A
-    leave-one-out line needs at least three banks to mean anything, and is
-    reported as absent below that."""
+    ``seed_noise_share`` is the median share of s_B-squared that comes from
+    the variation between seeds (the GNN family), whose part of s_B does not
+    come from the bootstrap."""
     loo, q95 = reading["leave_one_out"], reading["null_check"]["null_q95"]
-    threshold = 1.0 - LOW_BAND
+    threshold = 1.0 - I2_THRESHOLD
     factors = {
-        "c_null": math.sqrt(reading["Q"] / q95) if q95 > 0 else None,
-        "c_band": (math.sqrt(threshold * reading["Q"] / (reading["k"] - 1))
-                   if reading["k"] > 1 else None),
-        "c_loo": (math.sqrt(threshold * loo["Q"] / (loo["k"] - 1))
-                  if loo["k"] > 1 else None)}
-    defined = [value for value in factors.values() if value is not None]
-    return {**factors, "binding": min(defined) if defined else None,
+        "c_null": math.sqrt(reading["Q"] / q95),
+        "c_i2": math.sqrt(threshold * reading["Q"] / (reading["k"] - 1)),
+        "c_loo": math.sqrt(threshold * loo["Q"] / (loo["k"] - 1))}
+    return {**factors, "smallest": min(factors.values()),
             "Q": reading["Q"], "k": reading["k"], "null_q95": q95,
-            "prices_the_conjecture_exactly": seed_noise_share is None,
             "seed_noise_share_median": seed_noise_share}
 
 
 def null_stability(reading: dict, reps: np.ndarray, deltas: np.ndarray,
-                   ses: np.ndarray, seed_var: np.ndarray | None) -> dict:
-    """How much the null's 95th percentile moves when its draw is redrawn.
-
-    For the tree family the null is a deterministic function of
-    the recorded replicates, so the line does not move at all. For the GNN
-    family each null replicate takes a fresh normal seed-noise draw, so the
-    line is a Monte-Carlo estimate: redrawing it ``STABILITY_DRAWS`` times
-    measures how often the null check would have read the other way. The
-    recomputation reads the persisted float32 replicates, and its seed-0
-    reading is reported against the recorded one."""
+                   ses: np.ndarray, seed_var: np.ndarray) -> dict:
+    """How much the GNN family's null-check 95th percentile moves when the
+    draws for the variation between seeds are made afresh ``STABILITY_DRAWS``
+    times, and how often the check passes. The recomputation reads the
+    persisted float32 replicates, and its seed-0 reading is reported against
+    the recorded one."""
     q95 = np.array([null_q_check(reps, deltas, ses, seed_var, seed=seed,
                                  level=NULL_LEVEL)["null_q95"]
-                    for seed in range(STABILITY_DRAWS if seed_var is not None else 1)])
+                    for seed in range(STABILITY_DRAWS)])
     observed = reading["Q"]
-    return {"draws": int(len(q95)), "deterministic": bool(seed_var is None),
+    return {"draws": int(len(q95)),
             "null_q95_min": float(q95.min()), "null_q95_median": float(np.median(q95)),
             "null_q95_max": float(q95.max()),
             "passes_share": float((observed > q95).mean()),
@@ -431,9 +423,8 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
         path, metrics = runs[key][fam]
         rows = table(key, fam)
         reps = np.load(verify(path, metrics["artifacts"]["replicates"])).astype(np.float64)
-        seed_var = rows["seed_var"].to_numpy() if fam == "gnn" else None
         return null_stability(reading(key, fam), reps, rows["delta"].to_numpy(),
-                              rows["se"].to_numpy(), seed_var)
+                              rows["se"].to_numpy(), rows["seed_var"].to_numpy())
 
     identity = {}
     for key, fams in runs.items():
@@ -447,11 +438,10 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
     c1 = {}
     for fam in ("tree", "gnn"):
         r = reading(P, fam)
-        c1[fam] = {"I2": r["I2"], "Q": r["Q"], "k": r["k"], "band": r["band"],
+        c1[fam] = {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
                    "null_passes": r["null_check"]["passes"],
                    "loo_I2": r["leave_one_out"]["I2"],
-                   "pass": bool(r["clears_low_band"] and r["null_check"]["passes"]
-                                and r["loo_clears_low_band"])}
+                   "pass": passes_three_tests(r)}
     g = reading(P, "gnn")
     c1["per_seed"] = {"readings": g.get("per_seed"), "agree": g.get("per_seed_agree")}
     c1["pass"] = (all(c1[f]["pass"] for f in ("tree", "gnn"))
@@ -465,9 +455,7 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
         "the tree and GNN families scored different test sets"
     rho = spearman_bank_bootstrap(tt.loc[banks, "delta"].to_numpy(),
                                   tg.loc[banks, "delta"].to_numpy(),
-                                  draws=SPEARMAN["draws"],
-                                  permutations=SPEARMAN["permutations"],
-                                  seed=SPEARMAN["seed"])
+                                  draws=SPEARMAN["draws"], seed=SPEARMAN["seed"])
     c2 = {**rho, "pass": rho["positive"], "test_set_identity": test_set_identity}
 
     c3 = {}
@@ -476,61 +464,54 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
         for fam in ("tree", "gnn"):
             if fam in runs.get(key, {}):
                 r = reading(key, fam)
-                fires = bool(r["clears_low_band"] and r["null_check"]["passes"]
-                             and r["loo_clears_low_band"])
                 c3[key][fam] = {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
                                 "null_passes": r["null_check"]["passes"],
                                 "loo_I2": r["leave_one_out"]["I2"],
-                                "silent": not fires,
-                                "fails_triple_on": [
-                                    line for line, held in
-                                    (("band", r["clears_low_band"]),
-                                     ("null", r["null_check"]["passes"]),
-                                     ("leave_one_out", r["loo_clears_low_band"]))
+                                "passes_three_tests": passes_three_tests(r),
+                                "fails_tests": [
+                                    test for test, held in
+                                    (("i2_test", r["passes_i2_test"]),
+                                     ("null_check", r["null_check"]["passes"]),
+                                     ("leave_one_out", r["passes_leave_one_out"]))
                                     if not held]}
     c3["complete"] = all(fam in c3.get(key, {}) for key in data.CONTROLS
                          for fam in ("tree", "gnn"))
     gated = [(key, fam) for key in data.CONTROLS for fam in ("tree", "gnn")
              if fam in c3.get(key, {})]
 
-    firing = [[k, f] for k, f in gated if not c3[k][f]["silent"]]
-    c3["firing"] = firing
-    c3["pass"] = c3["complete"] and not firing
+    passing = [[k, f] for k, f in gated if c3[k][f]["passes_three_tests"]]
+    c3["passing"] = passing
+    c3["pass"] = c3["complete"] and not passing
 
     criteria = {"1": c1, "2": c2, "3": c3}
     failing = sorted(c for c, held in criteria.items() if not held["pass"])
     outcome = "refuted" if failing else "supported"
 
     def three_tests(r: dict) -> dict:
-        return {"I2": r["I2"], "Q": r["Q"], "k": r["k"], "band": r["band"],
+        return {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
                 "null_passes": r["null_check"]["passes"],
                 "loo_I2": r["leave_one_out"]["I2"],
-                "clears_band": r["clears_low_band"],
-                "loo_clears_band": r["loo_clears_low_band"],
-                "fires_triple": bool(r["clears_low_band"] and r["null_check"]["passes"]
-                                     and r["loo_clears_low_band"]),
+                "passes_i2_test": r["passes_i2_test"],
+                "passes_leave_one_out": r["passes_leave_one_out"],
+                "passes_three_tests": passes_three_tests(r),
                 "weighted_mean": r["weighted_mean"]}
 
     same_world = {key: {fam: three_tests(reading(key, fam)) for fam in runs[key]}
                   for key in ("HI-Small",) if key in runs}
-    sensitivity = {key: {fam: three_tests(reading(key, fam)) for fam in runs[key]}
-                   for key in data.SENSITIVITY if key in runs}
     return {"criteria": criteria, "failing": failing, "hypothesis_1": outcome,
             "test_set_identity": identity,
             "robustness": {f"{key}/{fam}":
                            robustness(reading(key, fam), seed_noise_share(key, fam))
-                           for key, fams in runs.items() for fam in fams},
+                           for key in ROBUSTNESS_KEYS for fam in runs.get(key, {})},
             "null_stability": {f"{key}/{fam}": stability(key, fam)
-                               for key in [P] + data.CONTROLS + ["HI-Small"]
-                               for fam in runs.get(key, {})},
-            "same_world_sensitivity": same_world,
-            "sensitivity_eleven": sensitivity}
+                               for key, fam in STABILITY_CELLS},
+            "same_world_sensitivity": same_world}
 
 
 def cmd_verdict() -> int:
     done = completed(exp1.EXPERIMENT)
     runs: dict[str, dict[str, tuple[Path, dict]]] = {}
-    for key in data.PRIMARY + data.SENSITIVITY:
+    for key in data.PRIMARY:
         for fam in VERDICT_FAMILIES:
             found = shortfall_run(done, key, fam)
             if found is not None:
@@ -555,16 +536,17 @@ def cmd_verdict() -> int:
 
 
 def cmd_scores() -> int:
-    """F1 on the laundering class (times 100) and average precision on each
-    dataset's test window at (network, all): the tree family and the
-    blind tree at their configuration of highest validation average
-    precision, the GNN family as the mean over its three seeds."""
+    """The measured scores of the table of measured and published scores: F1
+    on the laundering class (times 100) and average precision on each
+    dataset's test window at (network, all), the tree family at its
+    configuration of highest validation average precision and the GNN family
+    as the mean over its three seeds, with the blind tree on the AMLgentex
+    dataset."""
     done = completed(exp1.EXPERIMENT)
     for key in SCORE_KEYS:
         cells = []
-        for check in ("tree_global", "gnn_global", "blind_global"):
-            if check not in exp1.dataset_checks(key):
-                continue
+        blind = ("blind_global",) if key == data.AMLGENTEX_DATASET else ()
+        for check in ("tree_global", "gnn_global") + blind:
             seeds = exp1.SEEDS if check == "gnn_global" else [-1]
             metrics = [exp1.recorded(done, exp1.Unit(check, key, seed=s)) for s in seeds]
             name = check.split("_")[0]
@@ -580,17 +562,20 @@ def cmd_scores() -> int:
 
 def cmd_all() -> int:
     done = completed(exp1.EXPERIMENT)
-    for key in data.PRIMARY + data.SENSITIVITY:
+    missing = 0
+    for key in data.PRIMARY:
         if not data.ledgers_ready(key):
+            print(f"{key}: ledgers not built", flush=True)
+            missing += 1
             continue
         for fam in exp1.shortfall_families(key):
-            cmd_shortfall(key, fam, done)
-    return 0
+            missing += cmd_shortfall(key, fam, done) is None
+    return 1 if missing else 0
 
 
 def cmd_status() -> int:
     done = completed(exp1.EXPERIMENT)
-    for key in data.PRIMARY + data.SENSITIVITY:
+    for key in data.PRIMARY:
         if not data.ledgers_ready(key):
             print(f"{key}: ledgers not built")
             continue

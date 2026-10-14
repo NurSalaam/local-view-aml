@@ -15,14 +15,11 @@ An undefined correlation is not evidence: where a variable carries no
 variation the statistic is NaN and the p-value is 1, never the smallest the
 permutation resolution allows.
 
-A bare rank correlation is tested by **permuting the banks**, which assumes
-only exchangeability under the null and gives a p-value that is never zero. A
-partial rank correlation is tested by permuting the target **within blocks of
-banks alike in the controls**, which leaves the controls' hold on the target in
-place and breaks only the association under test; the t-approximation on
-n − 2 − q degrees of freedom is recorded beside it, and is not the test,
-because rank residualisation removes only the linear-in-rank part of a
-control's effect.
+A partial rank correlation is tested by permuting the target **within blocks
+of banks alike in the controls**, which leaves the controls' hold on the
+target in place and breaks only the association under test. A t-approximation
+would not do, because rank residualisation removes only the linear-in-rank
+part of a control's effect.
 """
 
 from __future__ import annotations
@@ -47,47 +44,6 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 def spearman(x: np.ndarray, y: np.ndarray) -> float:
     return _pearson(_ranks(x), _ranks(y))
-
-
-def permutation_p(x: np.ndarray, y: np.ndarray, *, alternative: str = "two-sided",
-                  draws: int = 10_000, seed: int = 0) -> dict:
-    """Spearman's rho with a bank-permutation p-value.
-
-    The p-value is (1 + the number of permutations at least as extreme) /
-    (1 + draws), so it is never zero and reports its own resolution. The
-    alternative is ``two-sided`` or ``greater``.
-    """
-    rx, ry = _ranks(x), _ranks(y)
-    observed = _pearson(rx, ry)
-    if not np.isfinite(observed):
-        return {"rho": np.nan, "k": int(len(rx)), "alternative": alternative,
-                "permutations": int(draws), "p": 1.0,
-                "p_resolution": float(1.0 / (1 + draws))}
-    rng = np.random.default_rng(seed)
-    null = np.empty(draws)
-    for i in range(draws):
-        null[i] = _pearson(rx, rng.permutation(ry))
-    extreme = (np.abs(null) >= abs(observed)) if alternative == "two-sided" \
-        else (null >= observed)
-    return {"rho": observed, "k": int(len(rx)), "alternative": alternative,
-            "permutations": int(draws),
-            "p": float((1 + int(extreme.sum())) / (1 + draws)),
-            "p_resolution": float(1.0 / (1 + draws))}
-
-
-def asymptotic_p(rho: float, k: int, *, controls: int = 0,
-                 alternative: str = "two-sided") -> float:
-    """The t-approximation to a (partial) rank correlation's p-value, on
-    k − 2 − ``controls`` degrees of freedom."""
-    from scipy.stats import t as student_t
-
-    df = k - 2 - controls
-    if df <= 0 or not np.isfinite(rho) or abs(rho) >= 1.0:
-        return np.nan
-    statistic = rho * np.sqrt(df / (1.0 - rho * rho))
-    tail = float(student_t.sf(abs(statistic), df))
-    return 2.0 * tail if alternative == "two-sided" else \
-        (tail if statistic >= 0 else 1.0 - tail)
 
 
 def _as_columns(controls: np.ndarray) -> np.ndarray:
@@ -128,8 +84,7 @@ def partial_spearman(x: np.ndarray, y: np.ndarray, controls: np.ndarray) -> dict
     left = np.sqrt((residual_x @ residual_x) * (residual_y @ residual_y))
     rho = _pearson(residual_x, residual_y) \
         if spread > 0 and left > RESIDUAL_TOLERANCE * spread else np.nan
-    return {"rho": rho, "controls": int(q), "k": int(len(x)),
-            "p": asymptotic_p(rho, len(x), controls=q)}
+    return {"rho": rho, "controls": int(q), "k": int(len(x))}
 
 
 def control_blocks(controls: np.ndarray, width: int = 5) -> np.ndarray:
@@ -161,14 +116,14 @@ def conditional_permutation_p(x: np.ndarray, y: np.ndarray, controls: np.ndarray
     The statistic is :func:`partial_spearman`'s; the null permutes the target
     inside the blocks :func:`control_blocks` builds, so the controls' hold on
     the target survives the permutation and only the association under test is
-    destroyed. This replaces the t-approximation, whose size is inflated
-    wherever the controls act on both variables other than linearly in rank.
+    destroyed. A t-approximation's size would be inflated wherever the
+    controls act on both variables other than linearly in rank.
     """
     blocks = control_blocks(controls, width)
     observed = partial_spearman(x, y, controls)
     members = [np.flatnonzero(blocks == b) for b in np.unique(blocks)]
     if not np.isfinite(observed["rho"]):
-        return {**observed, "p_conditional": 1.0, "p_asymptotic": observed["p"],
+        return {**observed, "p_conditional": 1.0,
                 "blocks": int(len(members)), "block_width": int(width),
                 "permutations": int(draws)}
 
@@ -189,7 +144,7 @@ def conditional_permutation_p(x: np.ndarray, y: np.ndarray, controls: np.ndarray
     null = np.where(denominator > 0, numerator / denominator, np.nan)
     extreme = np.abs(null) >= abs(observed["rho"])
     return {**observed, "p_conditional": float((1 + int(extreme.sum())) / (1 + draws)),
-            "p_asymptotic": observed["p"], "blocks": int(len(members)),
+            "blocks": int(len(members)),
             "block_width": int(width), "permutations": int(draws)}
 
 

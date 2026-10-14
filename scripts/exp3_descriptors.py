@@ -5,7 +5,7 @@ and the sixteen rules on them.
 Computes the twelve label-free properties of every qualifying bank of HI-Medium
 and HI-Small, then scores the sixteen rules on HI-Medium's 107 qualifying banks
 for each family: each rule's out-of-fold rho, and its paired bank-bootstrap
-difference from the scale rule. Nothing trains; every number is a function of
+difference from the scale rule, which gives the verdict on hypothesis 2. Nothing trains; every number is a function of
 the cached ledgers and of Experiment 1's recorded shortfalls.
 
 A check precedes every reading. It recomputes ten banks' properties by a
@@ -98,8 +98,8 @@ def descriptor_metrics(key: str, run_dir: Path) -> dict:
             "constant": bool(len(np.unique(finite)) <= 1)}
     return {"dataset_key": key, "world": dd.data.DATASETS[key][0],
             "k": int(len(table)),
-            "descriptor": summary,
-            "constant_descriptors": sorted(n for n in desc.NAMES if summary[n]["constant"]),
+            "property": summary,
+            "constant_properties": sorted(n for n in desc.NAMES if summary[n]["constant"]),
             "banks_with_any_undefined": int(
                 (~np.isfinite(table[list(desc.NAMES)].to_numpy())).any(axis=1).sum()),
             "seconds": time.time() - t0,
@@ -110,7 +110,7 @@ def descriptor_metrics(key: str, run_dir: Path) -> dict:
 def cmd_descriptors(key: str, done: dict) -> dict:
     metrics = run(EXPERIMENT, descriptor_config(key),
                   lambda config, run_dir: descriptor_metrics(key, run_dir), done=done)
-    constant = metrics["constant_descriptors"]
+    constant = metrics["constant_properties"]
     print(f"{CHECK} {key}: k {metrics['k']}, "
           f"{metrics['banks_with_any_undefined']} banks with an undefined property, "
           f"constant here: {constant or 'none'}", flush=True)
@@ -297,16 +297,11 @@ def selection_config(family: str) -> dict:
             "outperforms": "a rule outperforms the scale rule when the 5th "
                            "percentile of the paired bank-bootstrap difference "
                            "between the two exceeds zero",
-            "choice_rule": ["the scale rule is chosen when no other rule outperforms it",
-                            "otherwise the rules that outperform it are ranked by "
-                            "mean out-of-fold correlation, and one ties with the best "
-                            "of them when it trails that best by no more than the "
-                            "paired bank-bootstrap standard deviation of its own "
-                            "difference from the best-scoring of all the rules",
-                            "fewest properties wins the tie",
-                            "candidate order breaks a remaining tie"],
+            "hypothesis_2": "refuted for the family when none of the fifteen "
+                            "other rules outperforms the scale rule",
             "estimand": "the mean over repeats of the out-of-fold rank correlation; "
-                        "every score, wobble and difference is that same quantity",
+                        "every score, standard deviation and difference is that "
+                        "same quantity",
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
             "inputs": {"descriptors": config_hash(descriptor_config(dd.FIT_KEY)),
                        "shortfall": dd.shortfall_hash(dd.FIT_KEY, family)},
@@ -314,10 +309,10 @@ def selection_config(family: str) -> dict:
 
 
 def evaluate(design_all: pd.DataFrame, target: np.ndarray, weights: np.ndarray) -> dict:
-    """Every candidate's out-of-fold predictions and the readings the choice
-    rule needs, all of them the *same* estimand: the mean over repeats of the
-    out-of-fold rank correlation, and the bank-bootstrap standard deviation of
-    that mean — never of some other statistic standing in for it."""
+    """Every candidate's out-of-fold predictions, its out-of-fold rho and its
+    paired bank-bootstrap difference from the scale rule, all of them the
+    *same* estimand: the mean over repeats of the out-of-fold rank
+    correlation."""
     out = {}
     for candidate in CANDIDATES:
         columns = [f"log1p_{name}" for name in candidate.descriptors]
@@ -327,21 +322,19 @@ def evaluate(design_all: pd.DataFrame, target: np.ndarray, weights: np.ndarray) 
         per_repeat = np.array([rank.spearman(row, target) for row in predictions])
         out[candidate.name] = {
             "per_repeat": per_repeat, "score": float(per_repeat.mean()),
-            "repeat_sd": float(per_repeat.std(ddof=1)),
-            "predictions": predictions, "prediction": predictions.mean(axis=0),
-            "bootstrap": rank.bootstrap_repeat_mean(predictions, target,
-                                                    draws=BOOTSTRAP_DRAWS, seed=SEED)}
+            "predictions": predictions, "prediction": predictions.mean(axis=0)}
 
-    score = {name: out[name]["score"] for name in CANDIDATE_ORDER}
-    leader = out[rule.best_by_score(CANDIDATE_ORDER, score)]["predictions"]
     baseline = out[desc.BASELINE]["predictions"]
     for name in CANDIDATE_ORDER:
-        predictions = out[name]["predictions"]
-        out[name]["paired_leader"] = rank.bootstrap_repeat_mean_difference(
-            predictions, leader, target, draws=BOOTSTRAP_DRAWS, seed=SEED)
         out[name]["paired_baseline"] = rank.bootstrap_repeat_mean_difference(
-            predictions, baseline, target, draws=BOOTSTRAP_DRAWS, seed=SEED)
+            out[name]["predictions"], baseline, target, draws=BOOTSTRAP_DRAWS, seed=SEED)
     return out
+
+
+def outperform(readings: dict) -> list[str]:
+    """The rules that outperform the scale rule, in candidate order."""
+    return [name for name in CANDIDATE_ORDER
+            if name != desc.BASELINE and readings[name]["paired_baseline"]["q05"] > 0]
 
 
 def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
@@ -355,16 +348,7 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
     unweighted = evaluate(design_all, target, np.ones_like(weights))
 
     score = {name: weighted[name]["score"] for name in CANDIDATE_ORDER}
-    paired = {name: weighted[name]["paired_leader"]["sd"] for name in CANDIDATE_ORDER}
-    beats = {name: bool(weighted[name]["paired_baseline"]["q05"] > 0)
-             for name in CANDIDATE_ORDER}
-    size = {candidate.name: len(candidate.descriptors) for candidate in CANDIDATES}
-    chosen = rule.choose(CANDIDATE_ORDER, score, paired, size, desc.BASELINE, beats)
-    chosen_unweighted = rule.choose(
-        CANDIDATE_ORDER, {n: unweighted[n]["score"] for n in CANDIDATE_ORDER},
-        {n: unweighted[n]["paired_leader"]["sd"] for n in CANDIDATE_ORDER}, size,
-        desc.BASELINE,
-        {n: bool(unweighted[n]["paired_baseline"]["q05"] > 0) for n in CANDIDATE_ORDER})
+    beaters = outperform(weighted)
 
     candidate_rows, coefficient_rows = [], []
     for candidate in CANDIDATES:
@@ -373,23 +357,18 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
         design = design_all[columns].to_numpy(np.float64)
         keep = ~rule.constant_columns(design)
         intercept, coefficients = rule.fit(design, target, weights, keep)
+        marginal = rank.bootstrap_repeat_mean(entry["predictions"], target,
+                                              draws=BOOTSTRAP_DRAWS, seed=SEED)
         candidate_rows.append({
             "candidate": candidate.name,
-            "descriptors": " ".join(candidate.descriptors),
-            "n_descriptors": size[candidate.name],
-            "condition_number": float(np.linalg.cond(
-                np.column_stack([np.ones(len(target)), design[:, keep]]))),
-            "score": entry["score"], "repeat_sd": entry["repeat_sd"],
+            "properties": " ".join(candidate.descriptors),
+            "score": entry["score"],
             **{f"score_r{i}": float(v) for i, v in enumerate(entry["per_repeat"])},
-            "marginal_sd": entry["bootstrap"]["sd"],
-            "paired_sd_vs_leader": entry["paired_leader"]["sd"],
+            "marginal_sd": marginal["sd"],
             "delta_rho_vs_baseline": entry["paired_baseline"]["delta"],
             "paired_sd_vs_baseline": entry["paired_baseline"]["sd"],
             "paired_q05_vs_baseline": entry["paired_baseline"]["q05"],
-            "score_unweighted": unweighted[candidate.name]["score"],
-            "beats_baseline": beats[candidate.name],
-            "tied": candidate.name in chosen["tied"],
-            "winner": candidate.name == chosen["winner"]})
+            "outperforms": candidate.name in beaters})
         coefficient_rows.append({
             "candidate": candidate.name, "term": "intercept", "value": intercept,
             "dropped": False})
@@ -409,13 +388,10 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
             "candidates": len(CANDIDATES),
             "baseline": desc.BASELINE,
             "baseline_score": score[desc.BASELINE],
-            "winner_score": score[chosen["winner"]],
             "score": score,
-            "choice": chosen,
-            "choice_unweighted": chosen_unweighted,
-            "winner_descriptors": list(
-                {c.name: c.descriptors for c in CANDIDATES}[chosen["winner"]]),
-            "agrees_with_unweighted": bool(chosen["winner"] == chosen_unweighted["winner"]),
+            "outperform_the_scale_rule": beaters,
+            "outperform_the_scale_rule_unweighted": outperform(unweighted),
+            "hypothesis_2": "supported" if beaters else "refuted",
             "seconds": time.time() - t0,
             "candidate_order": CANDIDATE_ORDER,
             "artifacts": {"candidates": write_csv(run_dir, "candidates", candidates_table),
@@ -430,11 +406,10 @@ def cmd_selection(family: str, done: dict) -> dict:
     metrics = run(EXPERIMENT, selection_config(family),
                   lambda config, run_dir: selection_metrics(family, run_dir, done),
                   done=done)
-    chosen = metrics["choice"]
     print(f"{SELECTION} {family}: the scale rule at rho "
           f"{metrics['baseline_score']:+.4f}; outperformed by "
-          f"{chosen['beaters'] or 'no other rule'}; chosen {chosen['winner']} "
-          f"({chosen['decided_by']})", flush=True)
+          f"{metrics['outperform_the_scale_rule'] or 'no other rule'}; hypothesis 2 "
+          f"{metrics['hypothesis_2']}", flush=True)
     return metrics
 
 

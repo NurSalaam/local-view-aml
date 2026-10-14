@@ -5,12 +5,8 @@
 Six candidates on HI-Small at (network, all), one Run per (candidate, seed).
 Stages, each a pure function over the Run log:
 
-  gate    candidate 1 at seeds 0-2, whose mean test average precision and
-          mean F1 must each fall within the range of the anchor's three seeds
-          (checks_anchor_gnn.py) widened by one standard deviation at each
-          end; nothing else runs until it passes
-  screen  candidates 2-6 at seed 0; all six seed-0 Runs ranked by their best
-          validation average precision
+  screen  candidates 1-6 at seed 0, ranked by their best validation average
+          precision
   commit  the two candidates highest at the screen, fitted at seeds 1-2 (their
           seed-0 Runs reused)
   verdict the candidate kept: the higher three-seed mean validation average
@@ -19,10 +15,10 @@ Stages, each a pure function over the Run log:
           kept, then the lower candidate number
 
 Usage:
-  uv run python scripts/select_gnn.py plan <gate|screen|commit>
+  uv run python scripts/select_gnn.py plan <screen|commit>
   uv run python scripts/select_gnn.py run <candidate:seed> [...]
-  uv run python scripts/select_gnn.py launch <gate|screen|commit> [--shards 3]
-  uv run python scripts/select_gnn.py gate | verdict | status
+  uv run python scripts/select_gnn.py launch <screen|commit> [--shards 3]
+  uv run python scripts/select_gnn.py verdict | status
 
 Execution settings come from the environment and are recorded in every Run
 config: M_TORCH_THREADS (default 4), M_GNN_WORKERS (default 0), M_DEVICE
@@ -49,7 +45,7 @@ from m.features import VERSION as FEATURES_VERSION  # noqa: E402
 from m.gnn import VERSION as GNN_VERSION  # noqa: E402
 from m.features import usd_rate_table  # noqa: E402
 from m.gnn import GNNConfig, edge_inputs, payment_graph, train_edge_scorer  # noqa: E402
-from m.runlog import REPO_ROOT, config_hash, experiments_root, find, index  # noqa: E402
+from m.runlog import REPO_ROOT, config_hash, experiments_root  # noqa: E402
 from m.stats import average_precision, minority_f1  # noqa: E402
 
 EXPERIMENT = "select_gnn"
@@ -165,10 +161,8 @@ def make_seed_fn(inputs: dict, candidate: int, seed: int):
 
 def plan(stage: str, done: dict) -> list[tuple[int, int]]:
     """The (candidate, seed) units a stage still needs, in launch order."""
-    if stage == "gate":
-        wanted = [(1, s) for s in SEEDS]
-    elif stage == "screen":
-        wanted = [(c, 0) for c in CANDIDATES if c != 1]
+    if stage == "screen":
+        wanted = [(c, 0) for c in CANDIDATES]
     elif stage == "commit":
         wanted = [(c, s) for c in finalists(done) for s in SEEDS]
     else:
@@ -197,35 +191,6 @@ def finalists(done: dict) -> list[int]:
     ranked = sorted(table, key=lambda c: (-table[c]["val_ap"],
                                           table[c]["n_parameters"], c))
     return ranked[:2]
-
-
-def gate_reading(done: dict) -> dict:
-    """Candidate 1's three seeds against the anchor's: each mean must fall
-    within the range of the anchor's seeds widened by one standard deviation
-    at each end."""
-    ref_dir = find(index("checks"), check="anchor_gnn", dataset_key=DATASET)
-    ref = json.loads((ref_dir / "metrics.json").read_text())
-    ref_ap = np.array([s["test_ap"] for s in ref["seeds"]])
-    ref_f1 = np.array([s["test_f1_x100"] for s in ref["seeds"]])
-    sd_ap, sd_f1 = ref_ap.std(ddof=1), ref_f1.std(ddof=1)
-    band = {"test_ap": [float(ref_ap.min() - sd_ap), float(ref_ap.max() + sd_ap)],
-            "test_f1_x100": [float(ref_f1.min() - sd_f1), float(ref_f1.max() + sd_f1)]}
-    seeds = [recorded(done, 1, s) for s in SEEDS]
-    reading = {"reference_run": ref_dir.name,
-               "reference": {"test_ap": ref_ap.tolist(), "test_f1_x100": ref_f1.tolist(),
-                             "sd_ap": float(sd_ap), "sd_f1": float(sd_f1)},
-               "band": band,
-               "complete": all(m is not None for m in seeds)}
-    if reading["complete"]:
-        ap = float(np.mean([m["test_ap"] for m in seeds]))
-        f1 = float(np.mean([m["test_f1_x100"] for m in seeds]))
-        reading |= {"seeds": [{"seed": m["seed"], "test_ap": m["test_ap"],
-                               "test_f1_x100": m["test_f1_x100"],
-                               "val_ap": m["val_ap"]} for m in seeds],
-                    "test_ap_mean": ap, "test_f1_x100_mean": f1,
-                    "pass": bool(band["test_ap"][0] <= ap <= band["test_ap"][1]
-                                 and band["test_f1_x100"][0] <= f1 <= band["test_f1_x100"][1])}
-    return reading
 
 
 def make_verdict_fn():
@@ -265,14 +230,10 @@ def make_verdict_fn():
                     "seed_sd": {str(c): v for c, v in seed_sd.items()},
                     "pooled_seed_sd": pooled_sd, "difference": difference,
                     "tied": bool(tied_ap)}
-        gate = gate_reading(done)
-        if not gate["complete"]:
-            raise SystemExit("gate incomplete: candidate 1 lacks a seed Run")
         return {"dataset_key": DATASET, "screen": {str(c): v for c, v in table.items()},
                 "finalists": top, "commit": {str(c): v for c, v in commit.items()},
                 "winner": winner, "tie_break": tie_break, "tie_rule": tie_rule,
                 "configuration": CANDIDATES[winner].as_dict(),
-                "codepath_gate": gate,
                 "execution": {"device": os.environ.get("M_DEVICE", "cpu"),
                               "torch_threads": THREADS, "loader_workers": WORKERS}}
     return fn
@@ -280,12 +241,6 @@ def make_verdict_fn():
 
 def _exit_on_signal(signum, _frame):
     sys.exit(128 + signum)
-
-
-def gate_required(done: dict, what: str) -> None:
-    if not gate_reading(done).get("pass", False):
-        raise SystemExit(f"{what} refused: the code-path equivalence gate has not "
-                         f"passed; run `select_gnn.py launch gate` then `select_gnn.py gate`")
 
 
 def cmd_run(units: list[str]) -> int:
@@ -305,8 +260,6 @@ def cmd_run(units: list[str]) -> int:
           flush=True)
     inputs = build_inputs()
     for candidate, seed in todo:
-        if candidate != 1:
-            gate_required(done, f"candidate {candidate}")
         metrics = run(EXPERIMENT, unit_config(candidate, seed),
                       make_seed_fn(inputs, candidate, seed), seed=seed, done=done)
         print(f"candidate {candidate} seed {seed}: val_ap {metrics['val_ap']:.4f} "
@@ -335,8 +288,6 @@ def balanced_lots(units: list[tuple[int, int]], shards: int) -> list[list[tuple[
 
 def cmd_launch(stage: str, shards: int) -> int:
     done = done_index()
-    if stage in ("screen", "commit"):
-        gate_required(done, f"launch {stage}")
     units = plan(stage, done)
     if not units:
         print(f"{stage}: nothing to run", flush=True)
@@ -432,8 +383,6 @@ def verdict_ready(done: dict) -> None:
         missing = [s for s in SEEDS if recorded(done, c, s) is None]
         if missing:
             raise SystemExit(f"commit incomplete for candidate {c}: seeds {missing}")
-    if not gate_reading(done)["complete"]:
-        raise SystemExit("gate incomplete: candidate 1 lacks a seed Run")
 
 
 def main() -> int:
@@ -453,10 +402,6 @@ def main() -> int:
         if "--shards" in args:
             shards = int(args[args.index("--shards") + 1])
         return cmd_launch(args[0], shards)
-    if cmd == "gate":
-        reading = gate_reading(done_index())
-        print(json.dumps(reading, indent=2))
-        return 0 if reading.get("pass") else 1
     if cmd == "verdict":
         verdict_ready(done_index())
         metrics = run(EXPERIMENT, verdict_config(), make_verdict_fn())

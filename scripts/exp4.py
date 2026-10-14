@@ -94,10 +94,11 @@ PROTOCOL = {
               "precision on the bank's validation window: the median over the "
               "eight configurations (tree family) or the mean over the three "
               "seeds (GNN family)",
-    "abstain": "the bank borrows the chosen detector only if its validation "
-               "average precision exceeds that of the bank's own detector from "
-               "its Experiment 1 Run; a bank that abstains keeps its own "
-               "detector and has a gain of zero",
+    "comparison": "the comparison with the own detector: the bank borrows "
+                  "the chosen detector only if its validation average "
+                  "precision exceeds that of the bank's own detector from its "
+                  "Experiment 1 Run; otherwise the bank keeps its own detector "
+                  "and has a gain of zero",
     "pairing": {"tree": "median_over_grid", "gnn": "mean_over_seeds"},
     "movement": "only a fitted detector crosses between banks; the GNN "
                 "family's detector carries the lender's numeric "

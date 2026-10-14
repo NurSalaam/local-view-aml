@@ -8,11 +8,10 @@ transform; its assumption-free null centres each bootstrap replicate on the
 point shortfall, one common shortfall with the empirical joint dependence
 kept.
 
-Weighted average precision and ROC-AUC are vectorised over bootstrap
-replicates: scores are sorted once per (group, setting, side), and each
-replicate contributes a row of multiplicity weights whose cumulative sums
-give the precision at every distinct-score threshold, or the negative mass
-below every positive.
+Weighted average precision is vectorised over bootstrap replicates: scores
+are sorted once per (group, setting, side), and each replicate contributes a
+row of multiplicity weights whose cumulative sums give the precision at every
+distinct-score threshold.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from __future__ import annotations
 import numpy as np
 
 F1_THRESHOLD = 0.5
-METRICS = ("ap", "auc", "ap_common")
+METRICS = ("ap", "ap_common")
 
 
 def minority_f1(y: np.ndarray, score: np.ndarray) -> float:
@@ -61,31 +60,7 @@ def weighted_average_precision(y: np.ndarray, score: np.ndarray,
     return np.where(total > 0, ap, np.nan)
 
 
-def weighted_roc_auc(y: np.ndarray, score: np.ndarray,
-                     weights: np.ndarray) -> np.ndarray:
-    """ROC-AUC per replicate for a (replicates, n) weight matrix: the
-    weighted probability that a positive outscores a negative, ties at one
-    half. Replicates lacking positive or negative mass return NaN."""
-    order = np.argsort(score, kind="stable")
-    y_s = y[order].astype(np.float64)
-    score_s = score[order]
-    w_s = weights[:, order].astype(np.float64)
-    ends = np.flatnonzero(np.diff(score_s) != 0)
-    ends = np.concatenate([ends, [len(score_s) - 1]])
-    pos_cum = np.cumsum(w_s * y_s, axis=1)[:, ends]
-    neg_cum = np.cumsum(w_s * (1.0 - y_s), axis=1)[:, ends]
-    pos_group = np.diff(pos_cum, axis=1, prepend=0.0)
-    neg_group = np.diff(neg_cum, axis=1, prepend=0.0)
-    neg_below = neg_cum - neg_group
-    total_pos, total_neg = pos_cum[:, -1], neg_cum[:, -1]
-    with np.errstate(invalid="ignore", divide="ignore"):
-        auc = (pos_group * (neg_below + 0.5 * neg_group)).sum(axis=1) \
-            / (total_pos * total_neg)
-    return np.where((total_pos > 0) & (total_neg > 0), auc, np.nan)
-
-
-_METRIC_FN = {"ap": weighted_average_precision, "auc": weighted_roc_auc,
-              "ap_common": weighted_average_precision}
+_METRIC_FN = {"ap": weighted_average_precision, "ap_common": weighted_average_precision}
 
 
 def _row_weights(spec: dict, metric: str) -> np.ndarray | None:
@@ -234,15 +209,13 @@ def spearman(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def spearman_bank_bootstrap(a: np.ndarray, b: np.ndarray, *, draws: int = 1000,
-                            permutations: int = 10_000, seed: int = 0) -> dict:
+                            seed: int = 0) -> dict:
     """Spearman rho over groups with a group-resampling bootstrap interval
-    (one-sided positive reading: the 5th percentile) and a one-sided
-    permutation p-value; the bootstrap and the permutations each draw from a
-    fresh generator at ``seed``."""
+    (one-sided positive reading: the 5th percentile), drawn from a fresh
+    generator at ``seed``."""
     from scipy.stats import rankdata
 
     rng = np.random.default_rng(seed)
-    rng_perm = np.random.default_rng(seed)
     k = len(a)
     ra, rb = rankdata(a), rankdata(b)
 
@@ -257,13 +230,9 @@ def spearman_bank_bootstrap(a: np.ndarray, b: np.ndarray, *, draws: int = 1000,
         idx = rng.integers(0, k, k)
         boot[i] = rho(rankdata(a[idx]), rankdata(b[idx]))
     boot = boot[np.isfinite(boot)]
-    perm = np.empty(permutations)
-    for i in range(permutations):
-        perm[i] = rho(ra, rb[rng_perm.permutation(k)])
     return {"rho": observed, "k": int(k),
             "boot_q05": float(np.percentile(boot, 5)),
             "boot_ci95": [float(np.percentile(boot, 2.5)),
                           float(np.percentile(boot, 97.5))],
             "boot_draws_valid": int(len(boot)),
-            "perm_p_one_sided": float((perm >= observed).mean()),
             "positive": bool(np.percentile(boot, 5) > 0)}

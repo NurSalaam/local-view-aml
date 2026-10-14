@@ -81,7 +81,7 @@ for ax, (family, title) in zip(axes, FAMILIES):
 axes[0].set_ylabel("Average precision", fontsize=10, color=INK)
 figure.legend(handles=[
     Line2D([], [], color=MUTED, linewidth=3.2, label="Range at the full count"),
-    Line2D([], [], color=INK, linewidth=1.1, label="Full-count point"),
+    Line2D([], [], color=INK, linewidth=1.1, label="Score at the full count"),
     Line2D([], [], ls="none", marker="o", markersize=4.2, markerfacecolor=INK,
            markeredgecolor=INK, label="100 confirmed cases, within the range"),
     Line2D([], [], ls="none", marker="o", markersize=4.2, markerfacecolor="white",

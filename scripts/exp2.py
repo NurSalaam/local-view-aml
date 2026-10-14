@@ -304,7 +304,7 @@ def unit_config(unit: Unit, roster: pd.DataFrame | None = None) -> dict:
 # ---------------------------------------------------------------- caches --
 
 def build_caches(key: str) -> None:
-    """One pass over the roster ledgers: the C-local copies table (tree
+    """One pass over the roster ledgers: the (ledger, qualifying) copies table (tree
     features from each bank's own ledger, canonical (payment, bank) order),
     the union-of-ledgers GNN inputs, and the per-payment roster copy counts."""
     out = cache_dir(key)
@@ -450,8 +450,8 @@ def cglobal_tree_metrics(unit: Unit, run_dir: Path) -> dict:
         rows = np.flatnonzero((split == s) & (counts > 0))
         c = counts[rows]
         # The row-handling check behind the blind placebo: the repeated pooled
-        # rows must be, payment for payment and label for label, the C-local
-        # table's rows for the same split.
+        # rows must be, payment for payment and label for label, the (ledger,
+        # qualifying) table's rows for the same split.
         assert np.array_equal(np.repeat(rows, c), ref_payment[ref_split == s])
         assert np.array_equal(np.repeat(y[rows], c), ref_y[ref_split == s])
         return np.repeat(reader.rows(rows), c, axis=0), np.repeat(y[rows], c)
@@ -541,7 +541,7 @@ def gnn_cglobal_metrics(unit: Unit, run_dir: Path) -> dict:
 
 
 def gnn_cglobaldup_metrics(unit: Unit, run_dir: Path) -> dict:
-    """C-global with C-local's example weighting: a payment between two
+    """(network, qualifying) weighted as (ledger, qualifying): a payment between two
     roster banks is fitted and validated twice, as in the union of ledger
     graphs, so that the value of sight moves sight alone."""
     ts, payer, payee, numeric, codes, y, rows_all, n_nodes = exp1.read_gnn_inputs(unit.key)
@@ -561,7 +561,7 @@ def gnn_cglobaldup_metrics(unit: Unit, run_dir: Path) -> dict:
 
 def build_network_ledgers(key: str) -> None:
     """Each roster bank's ledger rows with their pooled network-sight feature
-    values, row-aligned to the ledger (the rows C-global reads for the
+    values, row-aligned to the ledger (the rows (network, qualifying) reads for the
     bank's payments); one ordered pass over the pooled table."""
     out = network_ledgers_dir(key)
     out.mkdir(parents=True, exist_ok=True)
@@ -829,8 +829,9 @@ def dial_units(key: str, family: str) -> list[Unit]:
 
 
 def plan_jobs(done: dict, exclude: frozenset[str] = frozenset()) -> list[Job]:
-    """Launch order: GNN C-global (longest), GNN C-local, the
-    copy-weighted GNN C-global, the tree cells, the blind tree, then the
+    """Launch order: the GNN family's (network, qualifying) (longest), its
+    (ledger, qualifying), its copy-weighted (network, qualifying), the tree
+    cells, the blind tree, then the
     case reduction; the own-pool network-sight cell last, its tree and
     blind units in lots of banks, its GNN units in lots of banks with the
     three seeds together."""

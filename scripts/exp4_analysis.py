@@ -11,9 +11,9 @@ whether hypothesis 3 is supported in each family.
 
 The bootstrap resamples the whole test window (1,000 replicates, seed 0,
 chunks of 100) and re-reads every bank from the same replicate. The choice and
-the abstain rule are applied once, on each bank's validation window, so the
-interval shows how the gain would vary over other test payments, not how the
-choice might change over other validation payments.
+the comparison with the own detector are made once, on each bank's validation
+window, so the interval shows how the gain would vary over other test
+payments, not how the choice might change over other validation payments.
 """
 from __future__ import annotations
 
@@ -142,12 +142,12 @@ def policy_config(key: str, family: str, inputs: dict) -> dict:
                          "bank's error bar, from the Experiment 1 shortfall "
                          "Run's banks.csv",
               "replicates": REPLICATES, "seed": SEED, "chunk": CHUNK,
-              "selection_noise": "the choice and the abstain rule are applied "
-                                 "once, on the bank's validation window; the "
-                                 "bootstrap resamples the test window only, so "
-                                 "the interval shows how the gain would vary "
-                                 "over other test payments, not how the choice "
-                                 "might change",
+              "selection_noise": "the choice and the comparison with the own "
+                                 "detector are made once, on the bank's "
+                                 "validation window; the bootstrap resamples "
+                                 "the test window only, so the interval shows "
+                                 "how the gain would vary over other test "
+                                 "payments, not how the choice might change",
               "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(key)},
               "inputs": {
                   "transfer": {b: _hash_of(p)
@@ -171,17 +171,17 @@ def policy_config(key: str, family: str, inputs: dict) -> dict:
 # ------------------------------------------------------------ bootstrap --
 
 def choose(candidate_val_ap: dict[str, float], own_val_ap: float) -> tuple[str, bool]:
-    """The choice and the abstain rule at one bank: the lender whose detector
-    has the highest validation average precision (the first in lender order
-    on a tie), borrowed only if that precision strictly exceeds the bank's
-    own."""
+    """The choice and the comparison with the own detector at one bank: the
+    lender whose detector has the highest validation average precision (the
+    first in lender order on a tie), borrowed only if that precision strictly
+    exceeds the bank's own; otherwise the bank keeps its own detector."""
     pick = max(candidate_val_ap, key=candidate_val_ap.get)
     return pick, candidate_val_ap[pick] > own_val_ap
 
 
 def load_groups(key: str, family: str, inputs: dict) -> dict:
     """Per bank: test-window positions, labels, and (settings, n_B) scores
-    for both sides, plus the bank's choice and abstain decision."""
+    for both sides, plus the bank's choice and whether it borrows."""
     split = load_column(key, "split")
     y_all = load_column(key, "is_laundering")
     test_rows = np.flatnonzero(split == 2)
@@ -228,8 +228,8 @@ def sides_bootstrap(n_test: int, groups: dict) -> dict:
     """Point APs and joint-bootstrap AP replicates for both sides from
     one seeded set of multiplicity draws (Experiment 1's discipline: seed 0, 1,000
     replicates, chunks of 100). A side that shares its score array with an
-    already-computed side reuses that side's numbers (an abstaining bank's
-    policy side is its solo side)."""
+    already-computed side reuses that side's numbers (the policy side of a
+    bank that keeps its own detector is its solo side)."""
     labels = list(groups)
     n_settings = next(iter(groups.values()))["solo"].shape[0]
 
@@ -278,9 +278,10 @@ def sides_bootstrap(n_test: int, groups: dict) -> dict:
 
 def gain_estimates(boot: dict, groups: dict, family: str) -> dict:
     """Per bank: the settings-paired point gain, replicate gains, bootstrap
-    standard error and interval under the abstain rule (``policy``; the GNN
-    family adds the between-seed variance of the per-seed point gains), and
-    the point gain of the chosen detector without it (``borrowed``)."""
+    standard error and interval with the comparison with the own detector
+    (``policy``; the GNN family adds the between-seed variance of the per-seed
+    point gains), and the point gain had the bank borrowed the chosen detector
+    whatever its own detector scores (``borrowed``)."""
     reduce = np.nanmedian if PAIRING[family] == "median_over_grid" else np.nanmean
     out = {}
     for g in boot["labels"]:
@@ -370,10 +371,11 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
                        "weighted_mean_shortfall": weighted_shortfall,
                        "line_quarter_of_weighted_shortfall": line}
     if inputs["examples"] is not None:
-        examples_q1 = inputs["examples"][1]["quartile_table"][0]
-        assert abs(examples_q1["mean_shortfall"] - float(shortfall_q1.mean())) < 1e-9 \
-            and examples_q1["banks"] == len(q1), \
-            "the first quarter disagrees with Experiment 2's examples Run"
+        epath, emetrics = inputs["examples"]
+        quarters = pd.read_csv(verify(epath, emetrics["artifacts"]["examples"]),
+                               dtype={"bank": str}).set_index("bank")["quartile"] + 1
+        assert (quarters.loc[labels].to_numpy() == table["quartile"].to_numpy()).all(), \
+            "the quarters disagree with Experiment 2's examples Run"
         threshold_block["matches_exp2_examples_run"] = True
 
     boot = sides_bootstrap(cell["n_test"], groups)
@@ -414,15 +416,7 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
     for s in range(per.shape[1]):
         table[f"policy_gain_s{s}"] = per[:, s]
 
-    solo_by_setting = {b: np.array(est[b]["levels"]["solo"]) for b in labels}
-    band_floor = np.array([solo_by_setting[b].min() for b in labels])
-    below_band = table["policy_ap"].to_numpy() < band_floor
     safety = {
-        "band": ("the per-setting spread of the bank's own solo test APs"
-                 if family != "gnn" else "the bank's own solo seed band"),
-        "banks_below_own_band": int(below_band.sum()),
-        "below_own_band": sorted(np.array(labels)[below_band].tolist()),
-        "abstain_rate": float((~table["borrow"]).mean()),
         "borrows": int(table["borrow"].sum()),
         "error_table": {
             "harmful_borrows_not_avoided": int(
@@ -436,16 +430,10 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
                             & (table["gain_if_borrowed"] < 0)].tolist())}}
 
     selection_signal = {
-        "median_val_pos_by_quartile": {
-            int(q): float(sub["val_pos"].median())
-            for q, sub in table.groupby("quartile")},
-        "banks_with_val_pos_at_most_10": int((table["val_pos"] <= 10).sum()),
         "q1_banks_with_val_pos_at_most_10": int(
             (table.loc[table["quartile"] == 1, "val_pos"] <= 10).sum()),
         "min_val_pos": int(table["val_pos"].min())}
 
-    gap = table["global_ap"] - table["solo_ap"]
-    ok = gap > 0.01
     quartiles = []
     for q in (1, 2, 3, 4):
         sub = table[table["quartile"] == q]
@@ -453,23 +441,12 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
             "quartile": q, "banks": int(len(sub)),
             "count_range": [int(sub["train_pos"].min()),
                             int(sub["train_pos"].max())],
-            "median_test_base_rate": float(
-                (sub["test_pos"] / sub["test_rows"]).median()),
             "median_solo_ap": float(sub["solo_ap"].median()),
             "median_policy_ap": float(sub["policy_ap"].median()),
             "median_global_ap": float(sub["global_ap"].median()),
             "median_clocal_ap": (float(sub["clocal_ap"].median())
-                                 if sub["clocal_ap"].notna().any() else None),
-            "median_policy_gain": float(sub["policy_gain"].median()),
-            "mean_policy_gain": float(sub["policy_gain"].mean()),
-            "borrows": int(sub["borrow"].sum()),
-            "policy_negative": int((sub["policy_gain"] < 0).sum())})
-    yardsticks = {
-        "quartile_table": quartiles,
-        "gap_closed_policy": {
-            "banks": int(ok.sum()),
-            "median": float(((table.loc[ok, "policy_ap"]
-                              - table.loc[ok, "solo_ap"]) / gap[ok]).median())}}
+                                 if sub["clocal_ap"].notna().any() else None)})
+    yardsticks = {"quartile_table": quartiles}
 
     reps_policy = np.stack([est[b]["policy"]["delta_reps"] for b in labels],
                            axis=1)
@@ -578,10 +555,9 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
                 "line_quarter_of_weighted_shortfall":
                     m["threshold"]["line_quarter_of_weighted_shortfall"],
                 "borrows": m["safety"]["borrows"], "k": m["k"]}
-    safety = {f: runs[P][f][1]["safety"] for f in FAMILIES}
     return {"criterion": CRITERION, "families": verdicts,
             "hypothesis_3": outcome, "supported_in": supported,
-            "repeat": repeat, "safety": safety}
+            "repeat": repeat}
 
 
 def cmd_verdict() -> int:

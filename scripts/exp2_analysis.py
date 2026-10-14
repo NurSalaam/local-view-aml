@@ -43,8 +43,7 @@ from extract import load_column  # noqa: E402
 from m import completed, run  # noqa: E402
 from m.artifacts import load_array, verify, write_array, write_csv  # noqa: E402
 from m.runlog import config_hash  # noqa: E402
-from m.stats import (heterogeneity, leave_one_out, null_q_check,  # noqa: E402
-                     weighted_average_precision)
+from m.stats import weighted_average_precision  # noqa: E402
 
 KEY = exp2.KEY
 REPLICATES = 1000
@@ -52,8 +51,8 @@ CHUNK = 100
 SEED = 0
 SIDES = ("solo", "clocal", "cglobal", "global")
 COMPONENTS = {"examples": ("clocal", "solo"), "sight": ("cglobal", "clocal"),
-              "stub": ("global", "cglobal"), "total": ("global", "solo")}
-COMPONENT_ORDER = ["examples", "sight", "stub", "total"]
+              "pool_extension": ("global", "cglobal"), "total": ("global", "solo")}
+COMPONENT_ORDER = ["examples", "sight", "pool_extension", "total"]
 PAIRING = {"tree": "median_over_grid", "blind": "median_over_grid",
            "gnn": "mean_over_seeds"}
 
@@ -159,10 +158,10 @@ def load_four_cells(family: str, dirs: dict) -> dict:
         code = int(roster.loc[bank, "code"])
         mask = cl_bank == code
         assert np.array_equal(cl_payment[mask], payment), \
-            f"{bank}: C-local scored a different paper than solo"
+            f"{bank}: (ledger, qualifying) scored a different paper than (ledger, own)"
         cg_idx = np.searchsorted(cg_payment, payment)
         assert np.array_equal(cg_payment[cg_idx], payment), \
-            f"{bank}: a payment is missing from C-global's paper"
+            f"{bank}: a payment is missing from (network, qualifying)'s paper"
         idx = position[payment]
         assert np.all(idx >= 0)
         if family == "gnn":
@@ -294,9 +293,10 @@ def components_config(family: str, dirs: dict, wpath: Path) -> dict:
         config["seeds"] = exp2.SEEDS
         config["interval"] = GNN_INTERVAL_NOTE
     if family == "blind":
-        config["placebo"] = ("own fields ignore the network, so C-local and "
-                             "C-global scores must be bit-identical and the "
-                             "value of sight exactly zero")
+        config["placebo"] = ("the blind tree reads only a payment's own fields, "
+                             "so its scores at (ledger, qualifying) and "
+                             "(network, qualifying) must be bit-identical and "
+                             "its value of sight exactly zero")
     return config
 
 
@@ -320,31 +320,16 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
         placebo = {"bit_identical": bool(all(d == 0.0 for d in diffs)),
                    "max_abs_diff": max(diffs)}
         assert placebo["bit_identical"], \
-            "the blind placebo fired: C-local and C-global scores differ"
+            ("the placebo failed: the blind tree's scores at (ledger, qualifying) "
+             "and (network, qualifying) differ")
 
     boot = four_cell_bootstrap(cell["n_test"], groups)
     est = component_estimates(boot, family)
     t_boot = time.time() - t0
 
     rng = np.random.default_rng(SEED)
-    readings, spread = {}, {}
-    for name in COMPONENT_ORDER:
-        reading = weighted_mean_reading(labels, est, weights, name, family, rng)
-        deltas = np.array([est[g][name]["delta"] for g in labels])
-        ses = np.array([est[g][name]["se"] for g in labels])
-        reps = np.stack([est[g][name]["delta_reps"] for g in labels], axis=1)
-        seed_var = (np.array([est[g][name]["seed_var"] for g in labels])
-                    if family == "gnn" else None)
-        if np.any(ses > 0):
-            het = heterogeneity(deltas, ses)
-            null = null_q_check(reps, deltas, ses, seed_var, seed=SEED)
-            loo = leave_one_out(labels, deltas, ses)
-            spread[name] = {**het, "null_check": null, "leave_one_out": loo}
-        else:
-            spread[name] = {"degenerate": "every bank's error bar is zero"}
-        spread[name] |= {"descriptive_only": True,
-                         "delta_range": [float(deltas.min()), float(deltas.max())]}
-        readings[name] = reading
+    readings = {name: weighted_mean_reading(labels, est, weights, name, family, rng)
+                for name in COMPONENT_ORDER}
 
     table = pd.DataFrame.from_dict(cell["meta"], orient="index").loc[labels]
     table.index.name = "bank"
@@ -370,7 +355,7 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
     out = {"dataset_key": KEY, "family": family, "k": len(labels),
            "n_test": int(cell["n_test"]), "pairing": PAIRING[family],
            "replicates": REPLICATES, "component_order": COMPONENT_ORDER,
-           "readings": readings, "heterogeneity_descriptive": spread,
+           "readings": readings,
            "seconds": {"bootstrap": t_boot, "total": time.time() - t0},
            "artifacts": artifacts}
     if placebo is not None:
@@ -412,8 +397,8 @@ def components_run(done1: dict, done2: dict, family: str) -> tuple[Path, dict] |
 # ------------------------------------------------------------ sightcheck --
 
 def sightcheck_dirs(done1: dict, done2: dict) -> dict | None:
-    """The GNN family's four cells with the copy-weighted C-global in place
-    of C-global."""
+    """The GNN family's four cells with (network, qualifying), each payment
+    fitted as often as under ledger sight, in place of (network, qualifying)."""
     dirs = cell_dirs(done1, done2, "gnn")
     if dirs is None:
         return None
@@ -427,8 +412,9 @@ def sightcheck_dirs(done1: dict, done2: dict) -> dict | None:
 def sightcheck_config(dirs: dict, wpath: Path, original: Path) -> dict:
     config = components_config("gnn", dirs, wpath)
     config["check"] = "sightcheck"
-    config["cglobal_cell"] = ("gnn_cglobaldup: C-global seeded once per roster "
-                              "copy, as C-local is")
+    config["cglobal_cell"] = ("gnn_cglobaldup: (network, qualifying) with each "
+                              "payment fitted once per qualifying bank it "
+                              "touches, as under ledger sight")
     config["original_components_run"] = _hash_of(original)
     config["paired_difference"] = ("copy-weighted sight minus original sight, "
                                    "per replicate on the shared draws, Experiment 1's "
@@ -501,15 +487,15 @@ SECOND_PATH = {
     "examples_over_sight_path1": (("clocal", 2), ("solo", -1), ("cglobal", -1)),
     "examples_over_sight_path2": (("cglobal", 1), ("nown", -2), ("solo", 1)),
 }
-HEADLINE = {"path1": "examples_over_sight_path1",
-            "path2": "examples_over_sight_path2"}
+EXAMPLES_OVER_SIGHT = {"path1": "examples_over_sight_path1",
+                       "path2": "examples_over_sight_path2"}
 COPY_WEIGHTED = "_copyweighted"
 
 
 def second_path_combinations(family: str) -> dict:
-    """The GNN family also reads every quantity holding C-global with the
-    copy-weighted C-global: every statement of its value of sight states
-    both weightings."""
+    """The GNN family also reads every quantity holding (network,
+    qualifying) with each payment fitted as often as under ledger sight:
+    every statement of its value of sight states both."""
     if family != "gnn":
         return SECOND_PATH
     swapped = {name + COPY_WEIGHTED: tuple(("cglobaldup" if c == "cglobal" else c, k)
@@ -525,7 +511,8 @@ def second_path_sides(family: str) -> tuple[str, ...]:
 
 def second_path_dirs(done1: dict, done2: dict, family: str) -> dict | None:
     """The four cells plus the own-pool network-sight Runs per
-    bank (and, for the GNN family, the copy-weighted C-global)."""
+    bank (and, for the GNN family, (network, qualifying) with each payment
+    fitted as often as under ledger sight)."""
     dirs = cell_dirs(done1, done2, family)
     if dirs is None:
         return None
@@ -547,8 +534,9 @@ def second_path_dirs(done1: dict, done2: dict, family: str) -> dict | None:
 
 def add_second_path_cells(family: str, dirs: dict, cell: dict) -> dict:
     """The own-pool network-sight scores per bank, each Run's test payments
-    asserted equal to solo's, in solo's order; for the GNN family the
-    copy-weighted C-global's scores on the same payments."""
+    asserted equal to (ledger, own)'s, in its order; for the GNN family the
+    scores of (network, qualifying), each payment fitted as often as under
+    ledger sight, on the same payments."""
     score = "test_probs" if family == "gnn" else "test_scores"
     if family == "gnn":
         dup_scores = np.stack([_scores(d, "test_probs") for d in dirs["cglobaldup"]])
@@ -607,9 +595,10 @@ def second_path_config(family: str, dirs: dict, wpath: Path,
         "check": "secondpath", "cells": list(second_path_sides(family)),
         "quantities": {name: " ".join(f"{k:+d} {c}" for c, k in terms)
                        for name, terms in combos.items()},
-        "headline": ("mainly training examples holds on a path when that "
-                     "path's examples-over-sight difference has its 95 % "
-                     "interval wholly above zero"),
+        "examples_exceed_sight": ("training examples outweigh sight on a path "
+                                  "when the value of training examples less "
+                                  "the value of sight has its 95 % interval "
+                                  "wholly above zero"),
         "reading_order": ("the four components first, on the "
                           "components Run's draws and seed-noise stream, "
                           "then the second-path quantities in the order "
@@ -648,7 +637,8 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
         placebo = {"bit_identical": bool(all(d == 0.0 for d in diffs)),
                    "max_abs_diff": max(diffs)}
         assert placebo["bit_identical"], \
-            "the blind placebo fired: own-pool network-sight and solo scores differ"
+            ("the placebo failed: the blind tree's scores at (network, own) and "
+             "(ledger, own) differ")
 
     boot = four_cell_bootstrap(cell["n_test"], groups, sides)
     components = component_estimates(boot, family)
@@ -678,11 +668,11 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
         readings[name] = reading
 
     suffixes = ("", COPY_WEIGHTED) if family == "gnn" else ("",)
-    headline = {}
+    examples_exceed_sight = {}
     for suffix in suffixes:
         holds = {path: readings[name + suffix]["ci95"][0] > 0.0
-                 for path, name in HEADLINE.items()}
-        headline["original" if not suffix else suffix.lstrip("_")] = \
+                 for path, name in EXAMPLES_OVER_SIGHT.items()}
+        examples_exceed_sight["original" if not suffix else suffix.lstrip("_")] = \
             holds | {"both_paths": all(holds.values())}
 
     agg = np.median if PAIRING[family] == "median_over_grid" else np.mean
@@ -703,7 +693,7 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
            "n_test": int(cell["n_test"]), "pairing": PAIRING[family],
            "replicates": REPLICATES, "quantity_order": order,
            "path1_readings": path1, "path1_reproduced": True,
-           "readings": readings, "headline_mainly_examples": headline,
+           "readings": readings, "examples_exceed_sight": examples_exceed_sight,
            "seconds": {"bootstrap": t_boot, "total": time.time() - t0},
            "artifacts": {"banks": write_csv(run_dir, "banks", table),
                          "replicates": write_array(run_dir, "replicates",
@@ -730,8 +720,8 @@ def cmd_secondpath(family: str) -> dict | None:
     for name, r in metrics["readings"].items():
         print(f"secondpath {family} {name}: mean {r['weighted_mean']:+.4f} "
               f"ci [{r['ci95'][0]:+.4f}, {r['ci95'][1]:+.4f}]", flush=True)
-    print(f"secondpath {family} headline: "
-          f"{json.dumps(metrics['headline_mainly_examples'])}", flush=True)
+    print(f"secondpath {family} training examples outweigh sight: "
+          f"{json.dumps(metrics['examples_exceed_sight'])}", flush=True)
     if "placebo" in metrics:
         print(f"secondpath {family} placebo: {metrics['placebo']}", flush=True)
     return metrics

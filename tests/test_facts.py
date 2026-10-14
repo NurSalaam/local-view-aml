@@ -31,19 +31,14 @@ class TestCensusTable(unittest.TestCase):
                          {"banks": 3, "ledger_payments_range": [9_610, 226_188],
                           "train_pos_range": [4, 265]})
 
-    def test_laundering_rate_and_the_difficult_span(self):
+    def test_laundering_rate(self):
         out = facts.census_facts(
             {"HI-Small": {"n_rows": 981_000, "n_laundering": 1_000}},
             {"n_rows": 6_530, "n_laundering": 10},
-            {facts.data.AMLGENTEX_DATASET: {"n_real_transfers": 2_200,
-                                            "n_sar_transfers": 100,
-                                            "test_sar_min": 1_471, "test_sar_max": 1_638},
-             "spain_100K_difficult": {"test_sar_min": 60, "test_sar_max": 153},
-             "us_100K_difficult": {"test_sar_min": 41, "test_sar_max": 90}})
+            {"n_real_transfers": 2_200, "n_sar_transfers": 100})
         self.assertEqual(out["laundering_one_in"],
                          {"HI-Small": 981.0, "transxion": 653.0,
                           facts.data.AMLGENTEX_DATASET: 22.0})
-        self.assertEqual(out["difficult_test_sar_range"], [41, 153])
 
 
 class TestRecovery(unittest.TestCase):

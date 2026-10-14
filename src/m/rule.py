@@ -1,5 +1,4 @@
-"""Rules on a bank's properties: candidates, fitting, folds, and the choice
-among them.
+"""Rules on a bank's properties: candidates, fitting and folds.
 
 A *rule* is a linear model on transformed property values whose coefficients
 are the only fitted quantities, so a bank plugs its own numbers into the
@@ -36,8 +35,7 @@ class Candidate(NamedTuple):
 
 def candidates(groups: dict[str, tuple[str, ...]], baseline: str) -> tuple[Candidate, ...]:
     """The construction: the baseline group alone, then each other
-    group alone, then the baseline plus one further property. The baseline is
-    listed first, so it wins every tie it belongs to."""
+    group alone, then the baseline plus one further property."""
     others = [name for name in groups if name != baseline]
     built = [Candidate(baseline, groups[baseline])]
     built += [Candidate(name, groups[name]) for name in others]
@@ -95,44 +93,3 @@ def out_of_fold(design: np.ndarray, target: np.ndarray, weights: np.ndarray, *,
                                           weights[~held], keep)
             predictions[repeat, held] = predict(design[held], intercept, coefficients)
     return predictions
-
-
-def best_by_score(order: list[str], score: dict[str, float]) -> str:
-    """The top-scoring candidate, candidate order breaking an exact tie."""
-    return max(order, key=lambda name: (score[name], -order.index(name)))
-
-
-def choose(order: list[str], score: dict[str, float], paired_sd: dict[str, float],
-           size: dict[str, int], baseline: str,
-           beats_baseline: dict[str, bool]) -> dict:
-    """The choice among the candidates.
-
-    The baseline is chosen unless another rule **outperforms it**: the paired
-    bootstrap's 5th percentile of the difference from the baseline above zero.
-    Among the rules that do outperform it, a candidate ties with the best of
-    them when it trails it by no more than the paired bank-bootstrap standard
-    deviation of its difference from the leader; the fewest properties then
-    wins, and candidate order breaks what remains.
-
-    Outperforming the baseline is required because the band is per candidate.
-    Without that requirement a noisier, lower-scoring candidate could tie with
-    the leader while the baseline, stably closer, could not, and a rule that
-    does not outperform the baseline would be chosen.
-    """
-    beaters = [name for name in order if name != baseline and beats_baseline[name]]
-    if not beaters:
-        return {"best_by_score": best_by_score(order, score), "beaters": [],
-                "tied": [baseline], "winner": baseline,
-                "decided_by": "the baseline stands unbeaten"}
-    best = best_by_score(beaters, score)
-    tied = [name for name in beaters if score[best] - score[name] <= paired_sd[name]]
-    winner = min(tied, key=lambda name: (size[name], order.index(name)))
-    smallest = [name for name in tied if size[name] == size[winner]]
-    if len(tied) == 1:
-        line = "score"
-    elif len(smallest) == 1:
-        line = "parsimony"
-    else:
-        line = "candidate order"
-    return {"best_by_score": best_by_score(order, score), "beaters": beaters,
-            "tied": tied, "winner": winner, "decided_by": line}

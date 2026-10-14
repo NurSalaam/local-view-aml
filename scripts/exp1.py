@@ -9,10 +9,10 @@ launcher resumes where it stopped and a finished unit is never recomputed.
 The tree and GNN families are fitted in the two scenarios of the shortfall:
 ``solo``, the bank's own detector at (ledger, own), and ``global``, the
 detector with the global view at (network, all). Both run on HI-Medium,
-HI-Small, the two controls and the eleven other AMLgentex datasets; LI-Small
-and LI-Medium take the global scenario alone, for the comparison with
-published scores. The blind tree runs solo at every qualifying bank of
-HI-Medium and global on HI-Medium and the AMLgentex dataset.
+HI-Small and the two controls; LI-Small and LI-Medium take the global
+scenario alone, for the comparison with published scores. The blind tree
+runs solo at every qualifying bank of HI-Medium and global on HI-Medium and
+the AMLgentex dataset.
 
   uv run python scripts/exp1.py plan                # jobs still to run
   uv run python scripts/exp1.py run <unit> [...]    # execute units in-process
@@ -755,8 +755,6 @@ class Job:
     threads: int
     mem_gb: float
     deps: tuple[str, ...] = ()
-    cost: float = 1.0
-    trailing: bool = False
 
 
 def _split_lots(items: list, weights: list[float], n: int) -> list[list]:
@@ -863,15 +861,12 @@ def dataset_jobs(key: str, done: dict, exclude: set[str]) -> dict[str, list[Job]
 def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     """Every job still to run, in launch priority (the
     tree family and the gates lead, HI-Medium's GNN global seeds follow,
-    LI-Medium last among the six datasets of extract.py, the sensitivity GNN
-    trailing)."""
-    sensitivity = data.SENSITIVITY
+    LI-Medium last)."""
     per = {key: dataset_jobs(key, done, exclude) for key in data.PRIMARY + data.ANCHOR_ONLY}
-    sens = {key: dataset_jobs(key, done, exclude) for key in sensitivity}
     lead = ["HI-Small", "HI-Medium", "transxion", data.AMLGENTEX_DATASET, "LI-Small"]
 
-    def take(keys, kind, table=per):
-        return [j for key in keys for j in table[key][kind]]
+    def take(keys, kind):
+        return [j for key in keys for j in per[key][kind]]
 
     queue: list[Job] = take(lead, "ledgers")
     if not gnn_inputs_path("HI-Small").exists():
@@ -895,13 +890,6 @@ def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     for kind in ("ledgers", "tree_solo", "tree_global", "gnn_solo", "gnn_inputs",
                  "gnn_global"):
         queue += take(("LI-Medium",), kind)
-    for key in sensitivity:
-        queue += take((key,), "ledgers", sens) + take((key,), "tree_solo", sens) \
-            + take((key,), "tree_global", sens)
-    for key in sensitivity:
-        for kind in ("gnn_inputs", "gnn_global", "gnn_solo"):
-            queue += [Job(j.name, j.specs, j.threads, j.mem_gb, j.deps, j.cost, True)
-                      for j in take((key,), kind, sens)]
     seen: set[str] = set()
     ordered = []
     for job in queue:
@@ -1058,28 +1046,13 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
             pending = [j for j in plan if j.name.endswith(":pending") and j.name not in failed]
             queue = [j for j in plan if not j.name.endswith(":pending")
                      and j.name not in running and j.name not in failed]
-            primary_open = any(not j.trailing for j in queue + pending) or any(
-                not job.trailing for _, job, _, _ in running.values())
             if not queue and not running and not pending:
                 break
             threads_used = sum(j.threads for _, j, _, _ in running.values())
             reserved = sum(j.mem_gb for _, j, _, _ in running.values())
-            trailing_reserved = sum(j.mem_gb for _, j, _, _ in running.values() if j.trailing)
-            primary_fits_threads = any(not j.trailing and threads_used + j.threads <= budget
-                                       and reserved + j.mem_gb <= machine_gb - 3.0
-                                       and all(dep_satisfied(d, done) for d in j.deps)
-                                       for j in queue)
             held_threads = 0
             launched_now = False
             for job in queue:
-                if job.trailing and primary_open:
-                    # Trailing work may use the machine while the last
-                    # primary jobs are memory-bound one at a time, but never
-                    # holds more memory than the largest primary job needs
-                    # to start (12 GB of the 21 GB admitted) and never takes
-                    # threads a launchable primary job could use.
-                    if primary_fits_threads or trailing_reserved + job.mem_gb > machine_gb - 3.0 - 12.0:
-                        continue
                 if not all(dep_satisfied(d, done) for d in job.deps):
                     if any(d in failed for d in job.deps):
                         failed.add(job.name)
@@ -1104,8 +1077,6 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
                 running[job.name] = (proc, job, handle, log_path)
                 threads_used += job.threads
                 reserved += job.mem_gb
-                if job.trailing:
-                    trailing_reserved += job.mem_gb
                 launched_now = True
                 print(f"[{time.strftime('%H:%M:%S')}] start {job.name} "
                       f"({len(job.specs)} units, {job.threads} thr, {job.mem_gb} GB; "
@@ -1133,8 +1104,7 @@ def cmd_plan() -> int:
     done = done_index()
     for job in plan_jobs(done):
         print(f"{job.name}: {len(job.specs)} units, {job.threads} thr, "
-              f"{job.mem_gb} GB, deps {list(job.deps)}"
-              + (" [trailing]" if job.trailing else ""))
+              f"{job.mem_gb} GB, deps {list(job.deps)}")
     return 0
 
 
