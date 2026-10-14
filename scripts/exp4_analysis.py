@@ -1,7 +1,8 @@
 #!/usr/bin/env python
-"""Experiment 4's analysis Runs. One ``policy`` Run per (dataset, family) reads every borrower's
-transfer Run beside Experiment 1's solo Runs through one seeded set of joint-bootstrap
-draws; one ``verdict`` Run applies hypothesis 3's gate, fixed before the result.
+"""Experiment 4's analysis Runs (Chapter 6). One ``policy`` Run per (dataset,
+family) reads every bank's transfer Run beside its Experiment 1 solo Runs
+through one seeded set of joint-bootstrap draws; one ``verdict`` Run states
+whether hypothesis 3 is supported in each family.
 
   uv run python scripts/exp4_analysis.py policy <key> <family>
   uv run python scripts/exp4_analysis.py verdict
@@ -9,10 +10,10 @@ draws; one ``verdict`` Run applies hypothesis 3's gate, fixed before the result.
   uv run python scripts/exp4_analysis.py status
 
 The bootstrap resamples the whole test window (1,000 replicates, seed 0,
-chunks of 100) and re-reads every bank from the same replicate. The pick and
-the abstain decision are point decisions read once from the validation
-window: the interval prices test-window noise, not selection noise, and this
-is disclosed in the Run's metrics.
+chunks of 100) and re-reads every bank from the same replicate. The choice and
+the abstain rule are applied once, on each bank's validation window, so the
+interval shows how the gain would vary over other test payments, not how the
+choice might change over other validation payments.
 """
 from __future__ import annotations
 
@@ -41,19 +42,18 @@ from m.stats import weighted_average_precision  # noqa: E402
 REPLICATES = 1000
 CHUNK = 100
 SEED = 0
-FAMILIES = ("tree", "gnn", "blind")
-GATED_FAMILIES = ("tree", "gnn")
-SIDES = ("solo", "policy", "ensemble")
+FAMILIES = ("tree", "gnn")
+SIDES = ("solo", "policy")
 PAIRING = exp4.PROTOCOL["pairing"]
-GNN_INTERVAL_NOTE = ("between-seed variance folded into the weighted-mean "
-                     "interval: each replicate's per-bank gain is perturbed "
-                     "by an independent normal draw of variance seed_var/3 "
-                     "(default_rng(0)), as Experiment 1's assumption-free null and "
-                     "Experiment 2's component intervals do")
-CRITERION = ("the example-poor quartile's roster-weighted mean "
-             "settings-paired policy gain has a joint-bootstrap interval "
-             "that excludes zero and a lower end above one quarter of that "
-             "quartile's Experiment 1 mean shortfall, per family against its own line")
+GNN_INTERVAL_NOTE = ("the interval of the weighted mean includes the variation "
+                     "between seeds: each replicate's per-bank gain is perturbed "
+                     "by an independent normal draw of variance seed_var/3, from "
+                     "a fresh default_rng(0) for each reading, as in Experiment "
+                     "1's null check and Experiment 2's component intervals")
+CRITERION = ("hypothesis 3 is supported in a family when the lower end of the "
+             "95 % interval of the weighted mean gain over the quarter of "
+             "banks with the fewest confirmed cases lies above 25 % of their "
+             "weighted mean Experiment 1 shortfall, and refuted otherwise")
 
 
 def check_execution_settings() -> None:
@@ -95,10 +95,9 @@ def policy_inputs(done: dict, done1: dict, key: str, family: str) -> dict | None
     """Every input Run of one (dataset, family) policy cell, or None while
     incomplete."""
     roster = data.read_roster(key)
-    check = "transfer_gnn" if family == "gnn" else f"transfer_{family}"
     transfer, solo = {}, {}
     for bank in roster.index:
-        unit = exp4.Unit(check, key, bank)
+        unit = exp4.Unit(f"transfer_{family}", key, bank)
         try:
             path = done.get(config_hash(exp4.unit_config(unit, done, done1)))
         except (SystemExit, AssertionError):
@@ -133,28 +132,22 @@ def policy_config(key: str, family: str, inputs: dict) -> dict:
               "protocol": exp4.PROTOCOL, "lenders": exp4.lenders_for(key),
               "pairing": PAIRING[family],
               "sides": list(SIDES),
-              "ensemble": "the per-setting (per-seed) mean of the available "
-                          "candidates' predicted probabilities; descriptive, "
-                          "gates nothing",
-              "quartiles": "pandas qcut over the roster's training-window "
-                           "laundering count, four bins (Experiment 2's rule); the "
-                           "example-poor quartile is the lowest",
-              "threshold": "one quarter of the example-poor quartile's "
-                           "unweighted mean Experiment 1 shortfall (Experiment 2's quartile "
-                           "discipline), fixed before this Run",
-              "weights": "Experiment 1's per-bank inverse-variance weights, 1/s_B^2 "
-                         "from the Experiment 1 shortfall Run's banks.csv",
+              "quarters": "four quarters of the qualifying banks by confirmed "
+                          "cases (training-window laundering payments), by "
+                          "pandas qcut as in Experiment 2; the first holds "
+                          "the fewest",
+              "line": "25 % of the weighted mean Experiment 1 shortfall of "
+                      "the first quarter",
+              "weights": "Experiment 1's per-bank weights 1/s_B^2, s_B the "
+                         "bank's error bar, from the Experiment 1 shortfall "
+                         "Run's banks.csv",
               "replicates": REPLICATES, "seed": SEED, "chunk": CHUNK,
-              "selection_noise": "the pick and the abstain decision are "
-                                 "point decisions from the validation "
-                                 "window; the bootstrap resamples the test "
-                                 "window only, so the interval prices "
-                                 "test-window noise, not selection noise",
-              "no_random_bank_control": "stated in advance: the claim is a "
-                                        "regime-level mean, and on worlds "
-                                        "whose banks are random labels "
-                                        "lender identity is meaningless by "
-                                        "construction",
+              "selection_noise": "the choice and the abstain rule are applied "
+                                 "once, on the bank's validation window; the "
+                                 "bootstrap resamples the test window only, so "
+                                 "the interval shows how the gain would vary "
+                                 "over other test payments, not how the choice "
+                                 "might change",
               "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(key)},
               "inputs": {
                   "transfer": {b: _hash_of(p)
@@ -172,16 +165,23 @@ def policy_config(key: str, family: str, inputs: dict) -> dict:
         config["seeds"] = exp4.SEEDS
         config["interval"] = GNN_INTERVAL_NOTE
         config["inputs"]["gate"] = _hash_of(inputs["gate"][0])
-    if exp4.SMOKE:
-        config["smoke"] = True
     return config
 
 
 # ------------------------------------------------------------ bootstrap --
 
+def choose(candidate_val_ap: dict[str, float], own_val_ap: float) -> tuple[str, bool]:
+    """The choice and the abstain rule at one bank: the lender whose detector
+    has the highest validation average precision (the first in lender order
+    on a tie), borrowed only if that precision strictly exceeds the bank's
+    own."""
+    pick = max(candidate_val_ap, key=candidate_val_ap.get)
+    return pick, candidate_val_ap[pick] > own_val_ap
+
+
 def load_groups(key: str, family: str, inputs: dict) -> dict:
     """Per bank: test-window positions, labels, and (settings, n_B) scores
-    for the three sides, plus the point decisions of the policy."""
+    for both sides, plus the bank's choice and abstain decision."""
     split = load_column(key, "split")
     y_all = load_column(key, "is_laundering")
     test_rows = np.flatnonzero(split == 2)
@@ -209,18 +209,15 @@ def load_groups(key: str, family: str, inputs: dict) -> dict:
         assert transfer.shape == (len(candidates), solo.shape[0], len(idx))
         cand_val = {c: float(reduce(tm["per_candidate"][c]["val_ap"]))
                     for c in candidates}
-        pick = max(candidates, key=lambda c: cand_val[c])
-        borrow = cand_val[pick] > own_val
+        pick, borrow = choose(cand_val, own_val)
         borrowed = transfer[candidates.index(pick)]
         y = y_all[payment].astype(np.int8)
         groups[bank] = {"idx": idx, "y": y, "solo": solo,
                         "policy": borrowed if borrow else solo,
-                        "borrowed": borrowed,
-                        "ensemble": transfer.mean(axis=0)}
+                        "borrowed": borrowed}
         decisions[bank] = {"pick": pick, "pick_val_ap": cand_val[pick],
                            "own_val_ap": own_val, "borrow": bool(borrow),
                            "candidate_val_ap": cand_val,
-                           "never_seen_ap": tm["never_seen_test_ap"],
                            "val_pos": tm["positives"]["val"],
                            "test_rows": tm["rows"]["test"],
                            "test_pos": tm["positives"]["test"]}
@@ -228,7 +225,7 @@ def load_groups(key: str, family: str, inputs: dict) -> dict:
 
 
 def sides_bootstrap(n_test: int, groups: dict) -> dict:
-    """Point APs and joint-bootstrap AP replicates for the three sides from
+    """Point APs and joint-bootstrap AP replicates for both sides from
     one seeded set of multiplicity draws (Experiment 1's discipline: seed 0, 1,000
     replicates, chunks of 100). A side that shares its score array with an
     already-computed side reuses that side's numbers (an abstaining bank's
@@ -281,51 +278,49 @@ def sides_bootstrap(n_test: int, groups: dict) -> dict:
 
 def gain_estimates(boot: dict, groups: dict, family: str) -> dict:
     """Per bank: the settings-paired point gain, replicate gains, bootstrap
-    standard error and interval, for the policy and the ensemble; the GNN
-    family adds the between-seed variance of the per-seed point gains."""
+    standard error and interval under the abstain rule (``policy``; the GNN
+    family adds the between-seed variance of the per-seed point gains), and
+    the point gain of the chosen detector without it (``borrowed``)."""
     reduce = np.nanmedian if PAIRING[family] == "median_over_grid" else np.nanmean
     out = {}
     for g in boot["labels"]:
-        rec = {}
-        for name, side in (("policy", "policy"), ("ensemble", "ensemble"),
-                           ("borrowed", None)):
-            if side is None:
-                borrowed_point = np.array(
-                    [weighted_average_precision(
-                        groups[g]["y"], groups[g]["borrowed"][s],
-                        np.ones((1, len(groups[g]["y"]))))[0]
-                     for s in range(boot["n_settings"])])
-                per_setting = borrowed_point - boot["point"][g]["solo"]
-                rec[name] = {"delta": float(reduce(per_setting)),
-                             "per_setting": per_setting.tolist(),
-                             "ap": float(reduce(borrowed_point))}
-                continue
-            per_setting = boot["point"][g][side] - boot["point"][g]["solo"]
-            delta_reps = reduce(boot["reps"][g][side]
-                                - boot["reps"][g]["solo"], axis=1)
-            valid = np.isfinite(delta_reps)
-            entry = {"delta": float(reduce(per_setting)),
-                     "per_setting": per_setting.tolist(),
-                     "delta_reps": delta_reps,
-                     "se_boot": float(np.std(delta_reps[valid], ddof=1)),
-                     "ci95": [float(v) for v in
-                              np.percentile(delta_reps[valid], [2.5, 97.5])]}
-            if family == "gnn":
-                entry["seed_var"] = float(np.var(per_setting, ddof=1))
-            rec[name] = entry
-        rec["levels"] = {side: [float(v) for v in boot["point"][g][side]]
-                         for side in SIDES}
-        out[g] = rec
+        borrowed_point = np.array(
+            [weighted_average_precision(
+                groups[g]["y"], groups[g]["borrowed"][s],
+                np.ones((1, len(groups[g]["y"]))))[0]
+             for s in range(boot["n_settings"])])
+        borrowed_gain = borrowed_point - boot["point"][g]["solo"]
+        per_setting = boot["point"][g]["policy"] - boot["point"][g]["solo"]
+        delta_reps = reduce(boot["reps"][g]["policy"]
+                            - boot["reps"][g]["solo"], axis=1)
+        valid = np.isfinite(delta_reps)
+        policy = {"delta": float(reduce(per_setting)),
+                  "per_setting": per_setting.tolist(),
+                  "delta_reps": delta_reps,
+                  "se_boot": float(np.std(delta_reps[valid], ddof=1)),
+                  "ci95": [float(v) for v in
+                           np.percentile(delta_reps[valid], [2.5, 97.5])]}
+        if family == "gnn":
+            policy["seed_var"] = float(np.var(per_setting, ddof=1))
+        out[g] = {"policy": policy,
+                  "borrowed": {"delta": float(reduce(borrowed_gain)),
+                               "per_setting": borrowed_gain.tolist(),
+                               "ap": float(reduce(borrowed_point))},
+                  "levels": {side: [float(v) for v in boot["point"][g][side]]
+                             for side in SIDES}}
     return out
 
 
 def weighted_mean_reading(labels: list[str], est: dict, weights: np.ndarray,
-                          name: str, family: str,
-                          rng: np.random.Generator) -> dict:
-    deltas = np.array([est[g][name]["delta"] for g in labels])
-    reps = np.stack([est[g][name]["delta_reps"] for g in labels], axis=1)
+                          family: str) -> dict:
+    """The weighted mean gain over ``labels`` with its bootstrap interval.
+    The GNN family's seed-noise draws come from a generator of this reading's
+    own, so no reading depends on which others were computed before it."""
+    deltas = np.array([est[g]["policy"]["delta"] for g in labels])
+    reps = np.stack([est[g]["policy"]["delta_reps"] for g in labels], axis=1)
     if family == "gnn":
-        seed_var = np.array([est[g][name]["seed_var"] for g in labels])
+        seed_var = np.array([est[g]["policy"]["seed_var"] for g in labels])
+        rng = np.random.default_rng(SEED)
         reps = reps + rng.standard_normal(reps.shape) \
             * np.sqrt(seed_var / 3.0)[None, :]
     wsum = weights.sum()
@@ -365,35 +360,31 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
     table["delta_exp1"] = banks_exp1.loc[labels, "delta"].to_numpy()
 
     q1 = [b for b in labels if table.loc[b, "quartile"] == 1]
-    d_q1 = float(table.loc[q1, "delta_exp1"].mean())
-    threshold = d_q1 / 4.0
+    weights_q1 = weights[[labels.index(b) for b in q1]]
+    shortfall_q1 = table.loc[q1, "delta_exp1"].to_numpy()
+    weighted_shortfall = float((weights_q1 * shortfall_q1).sum() / weights_q1.sum())
+    line = weighted_shortfall / 4.0
     threshold_block = {"quartile_banks": len(q1),
                        "count_range": [int(table.loc[q1, "train_pos"].min()),
                                        int(table.loc[q1, "train_pos"].max())],
-                       "exp1_mean_shortfall": d_q1, "line_D_over_4": threshold}
+                       "weighted_mean_shortfall": weighted_shortfall,
+                       "line_quarter_of_weighted_shortfall": line}
     if inputs["examples"] is not None:
         examples_q1 = inputs["examples"][1]["quartile_table"][0]
-        assert abs(examples_q1["mean_shortfall"] - d_q1) < 1e-9 \
+        assert abs(examples_q1["mean_shortfall"] - float(shortfall_q1.mean())) < 1e-9 \
             and examples_q1["banks"] == len(q1), \
-            "the quartile line disagrees with Experiment 2's examples Run"
+            "the first quarter disagrees with Experiment 2's examples Run"
         threshold_block["matches_exp2_examples_run"] = True
 
     boot = sides_bootstrap(cell["n_test"], groups)
     est = gain_estimates(boot, groups, family)
     t_boot = time.time() - t0
 
-    # The reading order (primary, ensemble_q1, all_banks) is load-bearing:
-    # the GNN seed-noise draws come from one shared generator in sequence.
-    rng = np.random.default_rng(SEED)
-    primary = weighted_mean_reading(q1, est, weights[[labels.index(b) for b in q1]],
-                                    "policy", family, rng)
+    primary = weighted_mean_reading(q1, est, weights_q1, family)
     primary["excludes_zero"] = bool(primary["ci95"][0] > 0.0
                                     or primary["ci95"][1] < 0.0)
-    primary["lower_end_above_line"] = bool(primary["ci95"][0] > threshold)
-    ensemble_q1 = weighted_mean_reading(q1, est,
-                                        weights[[labels.index(b) for b in q1]],
-                                        "ensemble", family, rng)
-    all_banks = weighted_mean_reading(labels, est, weights, "policy", family, rng)
+    primary["lower_end_above_line"] = bool(primary["ci95"][0] > line)
+    all_banks = weighted_mean_reading(labels, est, weights, family)
 
     reduce = np.median if PAIRING[family] == "median_over_grid" else np.mean
     table["val_pos"] = [decisions[b]["val_pos"] for b in labels]
@@ -403,8 +394,6 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
     table["borrow"] = [decisions[b]["borrow"] for b in labels]
     table["solo_ap"] = [float(reduce(est[b]["levels"]["solo"])) for b in labels]
     table["policy_ap"] = [float(reduce(est[b]["levels"]["policy"])) for b in labels]
-    table["ensemble_ap"] = [float(reduce(est[b]["levels"]["ensemble"]))
-                            for b in labels]
     table["borrowed_ap"] = [est[b]["borrowed"]["ap"] for b in labels]
     table["global_ap"] = banks_exp1.loc[labels, "global_ap"].to_numpy()
     if inputs["components"] is not None:
@@ -414,10 +403,8 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
         table["clocal_ap"] = banks_exp2.loc[labels, "clocal_ap"].to_numpy()
     else:
         table["clocal_ap"] = np.nan
-    table["never_seen_ap"] = [decisions[b]["never_seen_ap"] for b in labels]
     table["gain_if_borrowed"] = [est[b]["borrowed"]["delta"] for b in labels]
     table["policy_gain"] = [est[b]["policy"]["delta"] for b in labels]
-    table["ensemble_gain"] = [est[b]["ensemble"]["delta"] for b in labels]
     table["policy_se_boot"] = [est[b]["policy"]["se_boot"] for b in labels]
     table["policy_ci_lo"] = [est[b]["policy"]["ci95"][0] for b in labels]
     table["policy_ci_hi"] = [est[b]["policy"]["ci95"][1] for b in labels]
@@ -448,11 +435,6 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
                 table.index[table["borrow"]
                             & (table["gain_if_borrowed"] < 0)].tolist())}}
 
-    # The selection signal is thin exactly where the gate reads: a bank with
-    # few validation-window laundering payments compares APs measured on a
-    # handful of positives, so the pick and the abstain decision discriminate
-    # weakly there. Disclosed per quartile; the gain itself is measured on
-    # test windows of at least thirty positives.
     selection_signal = {
         "median_val_pos_by_quartile": {
             int(q): float(sub["val_pos"].median())
@@ -475,51 +457,36 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
                 (sub["test_pos"] / sub["test_rows"]).median()),
             "median_solo_ap": float(sub["solo_ap"].median()),
             "median_policy_ap": float(sub["policy_ap"].median()),
-            "median_ensemble_ap": float(sub["ensemble_ap"].median()),
             "median_global_ap": float(sub["global_ap"].median()),
             "median_clocal_ap": (float(sub["clocal_ap"].median())
                                  if sub["clocal_ap"].notna().any() else None),
-            "median_never_seen_ap": float(sub["never_seen_ap"].median()),
             "median_policy_gain": float(sub["policy_gain"].median()),
             "mean_policy_gain": float(sub["policy_gain"].mean()),
             "borrows": int(sub["borrow"].sum()),
-            "policy_above_never_seen": int(
-                (sub["policy_ap"] > sub["never_seen_ap"]).sum()),
             "policy_negative": int((sub["policy_gain"] < 0).sum())})
     yardsticks = {
         "quartile_table": quartiles,
         "gap_closed_policy": {
             "banks": int(ok.sum()),
             "median": float(((table.loc[ok, "policy_ap"]
-                              - table.loc[ok, "solo_ap"]) / gap[ok]).median())},
-        "gap_closed_ensemble": {
-            "banks": int(ok.sum()),
-            "median": float(((table.loc[ok, "ensemble_ap"]
-                              - table.loc[ok, "solo_ap"]) / gap[ok]).median())},
-        "policy_above_never_seen": int(
-            (table["policy_ap"] > table["never_seen_ap"]).sum())}
+                              - table.loc[ok, "solo_ap"]) / gap[ok]).median())}}
 
     reps_policy = np.stack([est[b]["policy"]["delta_reps"] for b in labels],
                            axis=1)
-    reps_ensemble = np.stack([est[b]["ensemble"]["delta_reps"] for b in labels],
-                             axis=1)
     artifacts = {"banks": write_csv(run_dir, "banks", table),
                  "roster": write_csv(run_dir, "roster", roster),
                  "replicates": write_array(run_dir, "replicates",
-                                           reps_policy.astype(np.float32)),
-                 "replicates_ensemble": write_array(
-                     run_dir, "replicates_ensemble",
-                     reps_ensemble.astype(np.float32))}
+                                           reps_policy.astype(np.float32))}
     return {"dataset_key": key, "family": family, "k": len(labels),
             "n_test": int(cell["n_test"]), "pairing": PAIRING[family],
             "replicates": REPLICATES, "lenders": lenders,
             "primary": primary, "threshold": threshold_block,
-            "ensemble_q1": ensemble_q1, "all_banks": all_banks,
+            "all_banks": all_banks,
             "safety": safety, "yardsticks": yardsticks,
             "selection_signal": selection_signal,
-            "selection_noise": "the interval prices test-window noise only; "
-                               "the pick and abstain decisions are point "
-                               "decisions from the validation window",
+            "selection_noise": "the interval shows how the gain would vary "
+                               "over other test payments, not how the choice "
+                               "might change over other validation payments",
             "seconds": {"bootstrap": t_boot, "total": time.time() - t0},
             "artifacts": artifacts}
 
@@ -537,10 +504,10 @@ def cmd_policy(key: str, family: str, done: dict | None = None,
                                                          run_dir),
                   done=done)
     p, t = metrics["primary"], metrics["threshold"]
-    print(f"policy {key} {family}: Q1 weighted mean {p['weighted_mean']:+.4f} "
-          f"ci [{p['ci95'][0]:+.4f}, {p['ci95'][1]:+.4f}] line "
-          f"{t['line_D_over_4']:+.4f} borrows {metrics['safety']['borrows']} "
-          f"of {metrics['k']}", flush=True)
+    print(f"policy {key} {family}: first quarter weighted mean gain "
+          f"{p['weighted_mean']:+.4f} ci [{p['ci95'][0]:+.4f}, {p['ci95'][1]:+.4f}] "
+          f"line {t['line_quarter_of_weighted_shortfall']:+.4f} borrows "
+          f"{metrics['safety']['borrows']} of {metrics['k']}", flush=True)
     return metrics
 
 
@@ -561,64 +528,60 @@ def verdict_config(cells: dict) -> dict:
     return {"experiment": exp4.EXPERIMENT, "check": "verdict",
             "hypothesis": 3,
             "primary_dataset": exp4.PRIMARY_KEY,
-            "gated_families": list(GATED_FAMILIES),
+            "families": list(FAMILIES),
             "criterion": CRITERION,
             "outcomes": {
-                "confirmed": "the criterion holds for both families",
-                "killed": "it fails for both",
-                "supported_one_family": "it holds for exactly one, reported "
-                                        "as exactly that weaker finding"},
-            "blind": "descriptive floor, gates nothing",
-            "sensitivity": "HI-Small under the identical protocol, gating "
-                           "nothing",
-            "world_note": "AMLworld plants the same pattern families at "
-                          "every bank, which plausibly inflates cross-bank "
-                          "transfer; stated wherever a transfer number is "
-                          "quoted",
-            "inputs": cells, "smoke": exp4.SMOKE or None}
+                "supported": "the criterion holds in both families",
+                "refuted": "it fails in both",
+                "supported_one_family": "it holds in exactly one family, for "
+                                        "which alone hypothesis 3 is supported"},
+            "repeat": "the experiment repeated on HI-Small under the same "
+                      "design; it decides nothing",
+            "world_note": "in AMLworld one generator produces the laundering "
+                          "at every bank, and its layering follows the same "
+                          "eight typologies throughout, so the laundering at a "
+                          "borrowing bank is of the kinds the borrowed "
+                          "detector learned from",
+            "inputs": cells}
 
 
 def verdict_metrics(runs: dict, run_dir: Path) -> dict:
     P = exp4.PRIMARY_KEY
     verdicts = {}
-    for family in GATED_FAMILIES:
+    for family in FAMILIES:
         m = runs[P][family][1]
         p, t = m["primary"], m["threshold"]
         verdicts[family] = {
             "weighted_mean": p["weighted_mean"], "ci95": p["ci95"],
-            "line_D_over_4": t["line_D_over_4"],
-            "exp1_mean_shortfall_q1": t["exp1_mean_shortfall"],
-            "excludes_zero": p["excludes_zero"],
-            "lower_end_above_line": p["lower_end_above_line"],
-            "share_of_shortfall_recovered": (
-                p["weighted_mean"] / t["exp1_mean_shortfall"]
-                if t["exp1_mean_shortfall"] else None),
-            "pass": bool(p["excludes_zero"] and p["lower_end_above_line"])}
-    passing = [f for f in GATED_FAMILIES if verdicts[f]["pass"]]
-    if len(passing) == 2:
-        outcome = "confirmed"
-    elif not passing:
-        outcome = "killed"
+            "line_quarter_of_weighted_shortfall":
+                t["line_quarter_of_weighted_shortfall"],
+            "weighted_mean_shortfall_q1": t["weighted_mean_shortfall"],
+            "share_of_shortfall_recovered":
+                p["weighted_mean"] / t["weighted_mean_shortfall"],
+            "supported": p["lower_end_above_line"]}
+    supported = [f for f in FAMILIES if verdicts[f]["supported"]]
+    if len(supported) == len(FAMILIES):
+        outcome = "supported"
+    elif not supported:
+        outcome = "refuted"
     else:
-        outcome = f"supported for one family only ({passing[0]})"
-    descriptive = {}
+        outcome = f"supported for the {supported[0]} family only"
+    repeat = {}
     for key, fams in runs.items():
-        for family, (path, m) in fams.items():
-            if key == P and family in GATED_FAMILIES:
-                continue
-            descriptive[f"{key}/{family}"] = {
+        if key == P:
+            continue
+        for family, (_, m) in fams.items():
+            repeat[f"{key}/{family}"] = {
                 "weighted_mean_q1": m["primary"]["weighted_mean"],
                 "ci95": m["primary"]["ci95"],
-                "line_D_over_4": m["threshold"]["line_D_over_4"],
+                "excludes_zero": m["primary"]["excludes_zero"],
+                "line_quarter_of_weighted_shortfall":
+                    m["threshold"]["line_quarter_of_weighted_shortfall"],
                 "borrows": m["safety"]["borrows"], "k": m["k"]}
-    safety = {f: runs[P][f][1]["safety"] for f in runs.get(P, {})}
+    safety = {f: runs[P][f][1]["safety"] for f in FAMILIES}
     return {"criterion": CRITERION, "families": verdicts,
-            "hypothesis_3": outcome, "passing": passing,
-            "descriptive": descriptive, "safety_disclosure": safety,
-            "reaction": (None if passing else
-                         "the examples channel needs the bank's own traffic "
-                         "distribution, and the sharing ladder's "
-                         "zero-data-movement rung is measured absent")}
+            "hypothesis_3": outcome, "supported_in": supported,
+            "repeat": repeat, "safety": safety}
 
 
 def cmd_verdict() -> int:
@@ -630,7 +593,7 @@ def cmd_verdict() -> int:
             found = policy_run(done, done1, key, family)
             if found is not None:
                 runs.setdefault(key, {})[family] = found
-    missing = [f"{exp4.PRIMARY_KEY}/{f}" for f in GATED_FAMILIES
+    missing = [f"{exp4.PRIMARY_KEY}/{f}" for f in FAMILIES
                if f not in runs.get(exp4.PRIMARY_KEY, {})]
     if missing:
         print(f"verdict: policy Runs missing for {missing}", flush=True)
@@ -640,8 +603,10 @@ def cmd_verdict() -> int:
     metrics = run(exp4.EXPERIMENT, verdict_config(cells),
                   lambda config, run_dir: verdict_metrics(runs, run_dir), done=done)
     print(json.dumps({"hypothesis_3": metrics["hypothesis_3"],
-                      "families": {f: {"pass": v["pass"], "ci95": v["ci95"],
-                                       "line": v["line_D_over_4"]}
+                      "families": {f: {"supported": v["supported"],
+                                       "ci95": v["ci95"],
+                                       "line": v["line_quarter_of_weighted_shortfall"],
+                                       "share": v["share_of_shortfall_recovered"]}
                                    for f, v in metrics["families"].items()}},
                      indent=2))
     return 0
@@ -670,7 +635,7 @@ def cmd_status() -> int:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
     check_execution_settings()

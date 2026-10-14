@@ -1,11 +1,11 @@
-"""The descriptors, the rule machinery, and Experiment 3's rank statistics.
+"""The label-free properties, the rule machinery, and the rank statistics.
 
-Every descriptor against a hand-computed value on a ledger small enough to
-check by eye; the folds against their definition; the freeze rule
+Every property against a hand-computed value on a ledger small enough to
+check by eye; the folds against their definition; the choice among the rules
 against each line it can be decided on; the partial rank correlation against
-an independent route through the precision matrix; Benjamini-Hochberg against
-scipy's; and the conditional permutation's size under a null it is meant to
-survive. Neither torch nor LightGBM is imported here, as in the scripts.
+an independent route through the precision matrix; and the conditional
+permutation's size under a null it is meant to survive. Neither torch nor
+LightGBM is imported here, as in the scripts.
 
 Run:  uv run python -m unittest tests.test_descriptors -v
 """
@@ -135,33 +135,33 @@ class Candidates(unittest.TestCase):
         self.assertEqual(coefficients[1], 0.0)
 
 
-class Freeze(unittest.TestCase):
-    """The baseline freezes unless something beats it outright; among the rules
-    that do, parsimony and candidate order decide."""
+class Choice(unittest.TestCase):
+    """The baseline is chosen unless another rule outperforms it; among the
+    rules that do, parsimony and candidate order decide."""
 
     order = ["scale", "rich", "other", "richer"]
     size = {"scale": 2, "rich": 2, "other": 2, "richer": 3}
     none_beat = dict.fromkeys(order, False)
     all_beat = {"scale": False, "rich": True, "other": True, "richer": True}
 
-    def freeze(self, score, paired, beats):
-        return rule.freeze(self.order, score, paired, self.size, "scale", beats)
+    def choose(self, score, paired, beats):
+        return rule.choose(self.order, score, paired, self.size, "scale", beats)
 
     def test_the_baseline_stands_when_nothing_beats_it(self) -> None:
-        out = self.freeze({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.80},
+        out = self.choose({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.80},
                           dict.fromkeys(self.order, 0.01), self.none_beat)
         self.assertEqual(out["winner"], "scale")
         self.assertEqual(out["decided_by"], "the baseline stands unbeaten")
         self.assertEqual(out["beaters"], [])
 
     def test_a_clear_winner_that_beats_the_baseline_wins_on_score(self) -> None:
-        out = self.freeze({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.45},
+        out = self.choose({"scale": 0.50, "rich": 0.90, "other": 0.40, "richer": 0.45},
                           dict.fromkeys(self.order, 0.01), self.all_beat)
         self.assertEqual(out["winner"], "rich")
         self.assertEqual(out["decided_by"], "score")
 
     def test_parsimony_breaks_a_tie(self) -> None:
-        out = self.freeze({"scale": 0.50, "rich": 0.51, "other": 0.30, "richer": 0.52},
+        out = self.choose({"scale": 0.50, "rich": 0.51, "other": 0.30, "richer": 0.52},
                           {"scale": 0.0, "rich": 0.05, "other": 0.0, "richer": 0.0},
                           self.all_beat)
         self.assertEqual(out["tied"], ["rich", "richer"])
@@ -169,33 +169,12 @@ class Freeze(unittest.TestCase):
         self.assertEqual(out["decided_by"], "parsimony")
 
     def test_candidate_order_breaks_a_remaining_tie(self) -> None:
-        out = self.freeze({"scale": 0.50, "rich": 0.51, "other": 0.515, "richer": 0.40},
+        out = self.choose({"scale": 0.50, "rich": 0.51, "other": 0.515, "richer": 0.40},
                           {"scale": 0.0, "rich": 0.05, "other": 0.0, "richer": 0.0},
                           self.all_beat)
         self.assertEqual(out["tied"], ["rich", "other"])
         self.assertEqual(out["winner"], "rich")
         self.assertEqual(out["decided_by"], "candidate order")
-
-    def test_the_guard_keeps_a_stably_closer_baseline(self) -> None:
-        """The band is per candidate, so without the guard a noisier and
-        lower-scoring candidate ties with the leader while the baseline, stably
-        closer, does not."""
-        score = {"scale": 0.620, "rich": 0.619, "other": 0.300, "richer": 0.644}
-        paired = {"scale": 0.022, "rich": 0.030, "other": 0.0, "richer": 0.0}
-        unguarded = rule.freeze_unguarded(self.order, score, paired, self.size)
-        self.assertNotIn("scale", unguarded["tied"])
-        self.assertIn("rich", unguarded["tied"])
-        guarded = self.freeze(score, paired, self.none_beat)
-        self.assertEqual(guarded["winner"], "scale")
-
-    def test_the_marginal_rule_is_wider(self) -> None:
-        score = {"scale": 0.50, "rich": 0.52, "other": 0.40, "richer": 0.40}
-        paired = dict.fromkeys(self.order, 0.005)
-        marginal = dict.fromkeys(self.order, 0.10)
-        current = self.freeze(score, paired, self.all_beat)
-        marginal_band = rule.freeze_marginal(self.order, score, marginal, self.size)
-        self.assertEqual(current["winner"], "rich")
-        self.assertEqual(marginal_band["winner"], "scale")
 
 
 class RankStatistics(unittest.TestCase):
@@ -224,27 +203,6 @@ class RankStatistics(unittest.TestCase):
             want = -precision[0, 1] / np.sqrt(precision[0, 0] * precision[1, 1])
             self.assertAlmostEqual(got, want, places=10)
 
-    def test_partial_kendall_is_free_of_removal_order(self) -> None:
-        rng = np.random.default_rng(3)
-        for _ in range(30):
-            n = int(rng.integers(20, 60))
-            controls = rng.normal(size=(n, 2))
-            x = controls @ [1.0, 0.5] + rng.normal(size=n)
-            y = controls @ [0.5, 1.0] + rng.normal(size=n)
-            forward = rank.partial_kendall(x, y, controls)
-            backward = rank.partial_kendall(x, y, controls[:, ::-1])
-            self.assertAlmostEqual(forward, backward, places=10)
-
-    def test_benjamini_hochberg_matches_scipy(self) -> None:
-        from scipy.stats import false_discovery_control
-
-        rng = np.random.default_rng(4)
-        for _ in range(200):
-            p = rng.random(int(rng.integers(2, 50)))
-            got = rank.benjamini_hochberg(p, 0.10)["declared"]
-            want = false_discovery_control(p, method="bh") <= 0.10
-            np.testing.assert_array_equal(got, want)
-
     def test_permutation_p_is_never_zero(self) -> None:
         x = np.arange(30.0)
         out = rank.permutation_p(x, x, alternative="greater", draws=199, seed=0)
@@ -265,8 +223,6 @@ class RankStatistics(unittest.TestCase):
             self.assertTrue(np.isnan(out["rho"]))
             self.assertEqual(out["p_conditional"], 1.0)
         self.assertTrue(np.isnan(rank.partial_spearman(y, 3 * z + 1, z)["rho"]))
-        self.assertEqual(rank.permutation_p_difference(np.ones(60), y, z, draws=99,
-                                                       seed=0), 1.0)
 
     def test_out_of_fold_never_sees_the_bank_it_predicts(self) -> None:
         rng = np.random.default_rng(9)

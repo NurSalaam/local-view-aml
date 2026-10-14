@@ -1,5 +1,5 @@
 """The GNN family: a two-layer GraphSAGE-style inductive GNN
-(Hamilton 2018).
+(Hamilton 2018) that scores payments.
 
 Payments are directed, so the message-passing graph holds each payment twice
 — once forward, once reversed, with a direction flag in the numeric edge
@@ -10,30 +10,25 @@ timestamp minus one second, so on integer timestamps the context is exactly
 the strictly-earlier payments — the same discipline as the tree family's
 windows. Nodes carry no observed features (a learned constant vector), so
 everything the model knows arrives through structure and edge attributes,
-which keeps it inductive.
+which keeps it inductive. The head scores a payment from both endpoint
+embeddings plus the payment's own fields.
 
-The edge head scores payment-labelled worlds from both endpoint embeddings
-plus the payment's own fields; the node head scores account-labelled worlds
-from the account embedding alone.
+The layer message relu(W [x_src ; e] + b) is computed as
+relu((x W_x)[src] + e W_e + b) — the node part projected once per node and
+gathered per edge, a single broadcast vector in layer 1 where every node
+carries the constant vector — and the small code vocabularies are looked up
+as one-hot products with the embedding tables. Both are algebraically
+identical to the direct form (tests/test_gnn.py) and differ from it only in
+floating-point summation order. ``VERSION`` names this computation in Run
+configs (``gnn_version``).
 
-Code path version 2 (recorded in Run configs as ``gnn_version``): the layer
-message relu(W [x_src ; e] + b) is computed as relu((x W_x)[src] + e W_e + b)
-— the node part projected once per node and gathered per edge, a single
-broadcast vector in layer 1 where every node carries the constant vector —
-and the tiny code vocabularies are looked up as one-hot products with the
-embedding tables. Both are algebraically identical to version 1 and differ
-only in floating-point summation order; the parameters, their shapes, and
-their initialisation draws are unchanged.
-
-Tensor assembly (value-preserving, so the version stays 2; ``ASSEMBLY_VERSION``
-re-keys the gates and Runs that depend on it): the graph stores
-one payment identifier and one direction flag per edge, and each batch's
-edge features are gathered from the payment table by that identifier —
-the same float32 values the earlier twice-stored layout held, without the
-second copy. Batches are drawn on a prefetch thread so neighbour sampling
-overlaps the model step; the sampler is the only consumer of the random
-stream while a loader is being iterated, so the sampled subgraphs and every
-downstream number are unchanged.
+The graph stores one payment identifier and one direction flag per edge, and
+each batch's edge features are gathered from the payment table by that
+identifier; ``ASSEMBLY_VERSION`` names this layout in Run configs. Batches
+are drawn on a prefetch thread so neighbour sampling overlaps the model
+step; the sampler is the only consumer of the random stream while a loader
+is being iterated, so the sampled subgraphs are those of a loader iterated
+in the foreground.
 """
 
 from __future__ import annotations
@@ -107,8 +102,7 @@ class EdgeSAGE(nn.Module):
 
 
 class PaymentGNN(nn.Module):
-    def __init__(self, n_codes: list[int], numeric_dim: int, cfg: GNNConfig,
-                 head: str):
+    def __init__(self, n_codes: list[int], numeric_dim: int, cfg: GNNConfig):
         super().__init__()
         self.n_codes = list(n_codes)
         self.embeddings = nn.ModuleList(
@@ -117,10 +111,8 @@ class PaymentGNN(nn.Module):
         self.node0 = nn.Parameter(torch.zeros(cfg.hidden))
         self.conv1 = EdgeSAGE(cfg.hidden, edge_dim, cfg.hidden)
         self.conv2 = EdgeSAGE(cfg.hidden, edge_dim, cfg.hidden)
-        head_in = 2 * cfg.hidden + edge_dim if head == "edge" else cfg.hidden
-        self.head_kind = head
-        self.head = nn.Sequential(nn.Linear(head_in, cfg.hidden), nn.ReLU(),
-                                  nn.Linear(cfg.hidden, 1))
+        self.head = nn.Sequential(nn.Linear(2 * cfg.hidden + edge_dim, cfg.hidden),
+                                  nn.ReLU(), nn.Linear(cfg.hidden, 1))
 
     def edge_features(self, numeric, codes):
         parts = [numeric]
@@ -135,11 +127,9 @@ class PaymentGNN(nn.Module):
                              minlength=batch.num_nodes).to(e.dtype)
         x = self.conv1(self.node0.unsqueeze(0), batch.edge_index, e, deg)
         x = self.conv2(x, batch.edge_index, e, deg)
-        if self.head_kind == "edge":
-            src, dst = batch.edge_label_index
-            seed = self.edge_features(batch.seed_numeric, batch.seed_codes)
-            return self.head(torch.cat([x[src], x[dst], seed], dim=1)).squeeze(1)
-        return self.head(x[:batch.batch_size]).squeeze(1)
+        src, dst = batch.edge_label_index
+        seed = self.edge_features(batch.seed_numeric, batch.seed_codes)
+        return self.head(torch.cat([x[src], x[dst], seed], dim=1)).squeeze(1)
 
 
 def n_parameters(model: nn.Module) -> int:
@@ -328,8 +318,7 @@ def train_edge_scorer(data, payer, payee, ts, numeric, codes, y,
         _attach_edge_features(batch, numeric_t, codes_t)
         return r
 
-    model = PaymentGNN(n_code_levels(codes), numeric.shape[1] + 1, cfg,
-                       head="edge").to(device)
+    model = PaymentGNN(n_code_levels(codes), numeric.shape[1] + 1, cfg).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
     loss_fn = nn.BCEWithLogitsLoss(
         pos_weight=torch.tensor(cfg.pos_weight, device=device))
@@ -359,86 +348,6 @@ def train_edge_scorer(data, payer, payee, ts, numeric, codes, y,
             n_batches += 1
         val_probs = infer("val")
         val_ap = average_precision(y[rows["val"]], val_probs)
-        trace.append({"epoch": epoch, "loss": total_loss / max(n_batches, 1),
-                      "val_ap": val_ap})
-        log(f"epoch {epoch}: loss {trace[-1]['loss']:.4f} val_ap {val_ap:.4f}")
-        if val_ap > best_ap:
-            best_ap, since_best = val_ap, 0
-            best_state, best_val_probs = _snapshot(model), val_probs
-        else:
-            since_best += 1
-        if on_epoch is not None:
-            on_epoch(trace)
-        if since_best >= cfg.patience:
-            break
-    model.load_state_dict(best_state)
-    model.to(device)
-    return {"val_probs": best_val_probs, "test_probs": infer("test"),
-            "best_val_ap": best_ap, "best_state": best_state,
-            "n_parameters": n_parameters(model), "trace": trace}
-
-
-def train_node_scorer(data, numeric, codes, y_node: np.ndarray,
-                      rows: dict[str, np.ndarray], cfg: GNNConfig, device,
-                      log=print,
-                      on_epoch: Callable[[list[dict]], None] | None = None) -> dict:
-    """Node-level variant for the account-labelled world; the anchor
-    protocol is transductive, so sampling here is not time-restricted."""
-    from torch_geometric.loader import NeighborLoader
-    from torch_geometric.sampler import NeighborSampler
-
-    from m.stats import average_precision
-
-    numeric_t = torch.from_numpy(numeric)
-    codes_t = torch.from_numpy(codes.astype(np.int32, copy=False))
-    y_t = torch.from_numpy(y_node.astype(np.float32))
-    sampler = NeighborSampler(data, num_neighbors=list(cfg.fanout))
-
-    def loader(split, shuffle):
-        return NeighborLoader(
-            data, num_neighbors=list(cfg.fanout), neighbor_sampler=sampler,
-            input_nodes=torch.from_numpy(rows[split]),
-            batch_size=cfg.batch_size, shuffle=shuffle,
-            num_workers=cfg.loader_workers,
-            persistent_workers=cfg.loader_workers > 0)
-
-    loaders = {"train": loader("train", shuffle=True),
-               "val": loader("val", shuffle=False),
-               "test": loader("test", shuffle=False)}
-
-    model = PaymentGNN(n_code_levels(codes), numeric.shape[1] + 1, cfg,
-                       head="node").to(device)
-    opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-    loss_fn = nn.BCEWithLogitsLoss(
-        pos_weight=torch.tensor(cfg.pos_weight, device=device))
-
-    @torch.no_grad()
-    def infer(split):
-        model.eval()
-        out = np.empty(len(rows[split]), np.float32)
-        cursor = 0
-        for batch in prefetch(loaders[split]):
-            _attach_edge_features(batch, numeric_t, codes_t)
-            probs = torch.sigmoid(model(batch.to(device))).float().cpu().numpy()
-            out[cursor:cursor + len(probs)] = probs
-            cursor += len(probs)
-        return out
-
-    best_ap, best_state, best_val_probs, since_best, trace = -1.0, None, None, 0, []
-    for epoch in range(cfg.max_epochs):
-        model.train()
-        total_loss = n_batches = 0
-        for batch in prefetch(loaders["train"]):
-            _attach_edge_features(batch, numeric_t, codes_t)
-            target = y_t[batch.n_id[:batch.batch_size]].to(device)
-            opt.zero_grad()
-            loss = loss_fn(model(batch.to(device)), target)
-            loss.backward()
-            opt.step()
-            total_loss += float(loss)
-            n_batches += 1
-        val_probs = infer("val")
-        val_ap = average_precision(y_node[rows["val"]], val_probs)
         trace.append({"epoch": epoch, "loss": total_loss / max(n_batches, 1),
                       "val_ap": val_ap})
         log(f"epoch {epoch}: loss {trace[-1]['loss']:.4f} val_ap {val_ap:.4f}")

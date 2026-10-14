@@ -1,14 +1,14 @@
 """The out-of-fold rank correlation of the sixteen rules on properties and of the rule on
 scale and confirmed cases on HI-Medium, for Chapter 5.
 
-Data: Experiment 3. The descriptor selection's `selection` Runs give the
-sixteen label-free candidates per family (`candidates.csv`: `score`, the mean
-over ten repeats of the out-of-fold Spearman correlation, and
-`paired_q05_vs_baseline`, the 5th percentile of the paired bank-redraw
-difference from the scale rule). Experiment 3's `ceiling` Runs give the ten label-using
-candidates the same way (`score`, `q05_vs_baseline`). The scale rule appears in
-both sets with the same score, which the script asserts, and is drawn once.
-A rule is drawn filled when its paired 5th percentile exceeds zero.
+Data: Experiment 3. The `selection` Runs give the sixteen rules on label-free
+properties per family (`candidates.csv`: `score`, the mean over ten repeats of
+the out-of-fold Spearman correlation, and `paired_q05_vs_baseline`, the 5th
+percentile of the paired bank-redraw difference from the scale rule). The
+`ceiling` Runs give the scale rule and the nine rules that use labels the same
+way (`score`, `q05_vs_baseline`). The scale rule appears in both sets with the
+same score, which the script asserts, and is drawn once. A rule is drawn
+filled when its paired 5th percentile exceeds zero.
 """
 from pathlib import Path
 

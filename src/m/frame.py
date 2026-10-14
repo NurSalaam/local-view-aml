@@ -1,48 +1,23 @@
-"""The frame probe's trivial rules.
+"""Counterparty history within a frame, for the never-seen-counterparty cue
+(Chapter 3, Census).
 
-A *frame* is a set of payments: the whole payment table (the global frame), or
-the payments touching one bank (that bank's ledger). Every rule here scores a
-payment from its frame alone, trains nothing, and counts only payments strictly
-earlier than the one it scores. Scored on one exam paper under both frames, a
-rule measures what the local frame manufactures: the gap between its ledger
-reading and its global reading is predictive signal that exists only because
-the bank sees a part of the network rather than the whole of it.
-
-Three rules cannot vary with the frame, and stand as the probe's placebo. The
-bank's own endpoint carries the same history in the bank's ledger as in the
-whole table, because every payment touching that account touches the bank. So
-does the ordered pair of endpoints, one of which is always the bank's. So does
-the payment's own amount, which counts no history at all. The probe scores all
-three on both frames and requires identical readings, which checks that the
-exam paper's rows and the global frame's rows line up.
+A *frame* is a set of payments: the whole payment table, or the payments in
+one bank's ledger. A payment's counterparty history is the number of
+strictly earlier payments in the frame in which its counterparty, the
+account that is not the bank's own, appears on either side. A counterparty
+with no such payment is never seen.
 
 Data. A frame arrives here as arrays in canonical (time-sorted) order: the two
 endpoints' account identity codes from :func:`m.features.account_codes` — one
 dictionary over both columns, so an account keeps one identity whichever side
-it pays from — the timestamp, and the amount. A bank's ledger is the same
-arrays restricted to the rows touching that bank, which leaves every identity
+it pays from — and the timestamp. A bank's ledger is the same arrays
+restricted to the rows touching that bank, which leaves every identity
 unchanged. Nothing here holds a DataFrame or mutates its input.
 """
 
 from __future__ import annotations
 
 import numpy as np
-
-VERSION = 1
-
-RULES = ("external", "own", "payer", "payee", "min", "pair", "amount")
-FRAME_INVARIANT = ("own", "pair", "amount")
-RULE_DESCRIPTIONS = {
-    "external": "minus the earlier appearances in the frame of the endpoint "
-                "that is not the bank's own account",
-    "own": "minus the earlier appearances in the frame of the bank's own endpoint",
-    "payer": "minus the earlier appearances in the frame of the paying account",
-    "payee": "minus the earlier appearances in the frame of the receiving account",
-    "min": "minus the smaller of the two endpoints' earlier appearances in the frame",
-    "pair": "minus the earlier appearances in the frame of the ordered "
-            "(payer, payee) pair",
-    "amount": "the payment's own amount in US dollars, which reads no history",
-}
 
 
 def earlier_counts(keys: tuple[np.ndarray, ...], ts: np.ndarray) -> np.ndarray:
@@ -81,30 +56,8 @@ def endpoint_history(payer: np.ndarray, payee: np.ndarray,
     return counts[:n], counts[n:]
 
 
-def pair_history(payer: np.ndarray, payee: np.ndarray,
-                 ts: np.ndarray) -> np.ndarray:
-    """Earlier appearances of each payment's ordered (payer, payee) pair."""
-    return earlier_counts((payer, payee), ts)
-
-
-def rule_scores(payer_hist: np.ndarray, payee_hist: np.ndarray,
-                pair_hist: np.ndarray, payer_is_own: np.ndarray,
-                amount_usd: np.ndarray) -> dict[str, np.ndarray]:
-    """Every trivial rule's score, higher meaning more suspicious. The
-    history arrays are counted within one frame; ``payer_is_own`` marks the
-    rows whose paying account belongs to the bank whose paper is scored."""
-    external = np.where(payer_is_own, payee_hist, payer_hist)
-    own = np.where(payer_is_own, payer_hist, payee_hist)
-    return {"external": -external.astype(np.float64),
-            "own": -own.astype(np.float64),
-            "payer": -payer_hist.astype(np.float64),
-            "payee": -payee_hist.astype(np.float64),
-            "min": -np.minimum(payer_hist, payee_hist).astype(np.float64),
-            "pair": -pair_hist.astype(np.float64),
-            "amount": amount_usd.astype(np.float64)}
-
-
 def external_history(payer_hist: np.ndarray, payee_hist: np.ndarray,
                      payer_is_own: np.ndarray) -> np.ndarray:
-    """The external endpoint's earlier appearances, as a count."""
+    """The counterparty's earlier appearances: the payee's where the payer is
+    the bank's own account, the payer's otherwise."""
     return np.where(payer_is_own, payee_hist, payer_hist)

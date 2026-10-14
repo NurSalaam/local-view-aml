@@ -2,12 +2,12 @@
 
 One discretisation for every table: a Dataset is constructed eagerly with
 ``DS_PARAMS`` and LightGBM's construction defaults, validation sets by
-``reference=``, before any ``lgb.train``. The eight frozen settings train
+``reference=``, before any ``lgb.train``. The eight configurations train
 from the constructed Dataset; ``num_threads`` is an execution parameter
 passed beside the frozen dictionary, never inside it.
 
-The row rule's copies table for a global-sight set-up is the pooled
-global-sight table with each payment's row repeated once per endpoint bank.
+The row rule's copies table under network sight is the pooled network-sight
+table with each payment's row repeated once per endpoint bank.
 ``RepeatedRowsSequence`` streams exactly that table from the pooled parquet
 cache — sampled rows for the bin mappers by random access, then the rows in
 order in batches — so the Medium datasets' 60 M-row tables never exist in

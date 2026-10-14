@@ -1,15 +1,16 @@
-"""The descriptor rule: candidates, fitting, folds, and the freeze rule.
+"""Rules on a bank's properties: candidates, fitting, folds, and the choice
+among them.
 
-A *rule* is a linear model on transformed descriptor values whose coefficients
+A *rule* is a linear model on transformed property values whose coefficients
 are the only fitted quantities, so a bank plugs its own numbers into the
-formula and needs no reference population. That property is what makes the rule
-bank-usable, and it is why nothing here standardises or centres a descriptor.
+formula and needs no reference population. That is what makes the rule usable
+by a bank, and it is why nothing here standardises or centres a property.
 
-Data. A candidate is a name and an ordered tuple of descriptor names. A design
-matrix is (banks, descriptors) of already-transformed values in the candidate's
+Data. A candidate is a name and an ordered tuple of property names. A design
+matrix is (banks, properties) of already-transformed values in the candidate's
 order; a target is (banks,) of measured shortfalls; weights are (banks,) of
-1/s_B². A fitted rule is the intercept and one coefficient per descriptor, in
-the candidate's order — small enough to print, freeze, and apply by hand.
+1/s_B². A fitted rule is the intercept and one coefficient per property, in
+the candidate's order — small enough to print and apply by hand.
 
 Fold identity is a function of the repeat index alone: repeat *r* permutes the
 roster's canonical order with ``numpy.random.default_rng(r)`` and cuts the
@@ -33,20 +34,9 @@ class Candidate(NamedTuple):
     descriptors: tuple[str, ...]
 
 
-class Rule(NamedTuple):
-    """A frozen rule: prediction = intercept + sum of coefficient x transformed
-    descriptor value, in ``descriptors`` order. A descriptor that carried no
-    variation across the fitting roster keeps a zero coefficient."""
-
-    descriptors: tuple[str, ...]
-    intercept: float
-    coefficients: tuple[float, ...]
-    dropped: tuple[str, ...]
-
-
 def candidates(groups: dict[str, tuple[str, ...]], baseline: str) -> tuple[Candidate, ...]:
     """The construction: the baseline group alone, then each other
-    group alone, then the baseline plus one further descriptor. The baseline is
+    group alone, then the baseline plus one further property. The baseline is
     listed first, so it wins every tie it belongs to."""
     others = [name for name in groups if name != baseline]
     built = [Candidate(baseline, groups[baseline])]
@@ -112,23 +102,22 @@ def best_by_score(order: list[str], score: dict[str, float]) -> str:
     return max(order, key=lambda name: (score[name], -order.index(name)))
 
 
-def freeze(order: list[str], score: dict[str, float], paired_sd: dict[str, float],
+def choose(order: list[str], score: dict[str, float], paired_sd: dict[str, float],
            size: dict[str, int], baseline: str,
            beats_baseline: dict[str, bool]) -> dict:
-    """The freeze rule, fixed before any candidate is scored.
+    """The choice among the candidates.
 
-    The baseline freezes unless a richer rule **beats it outright** — the paired
-    bootstrap's 5th percentile of the difference from the baseline above zero,
-    which is the test Experiment 3's ranking step applies. Among the rules that do beat
-    it, a candidate ties with the best of them when it trails it by no more than
-    the paired bank-bootstrap standard deviation of the difference between the
-    two; the fewest descriptors then wins, and candidate order breaks what
-    remains.
+    The baseline is chosen unless another rule **outperforms it**: the paired
+    bootstrap's 5th percentile of the difference from the baseline above zero.
+    Among the rules that do outperform it, a candidate ties with the best of
+    them when it trails it by no more than the paired bank-bootstrap standard
+    deviation of its difference from the leader; the fewest properties then
+    wins, and candidate order breaks what remains.
 
-    The guard exists because the band is per candidate. Without it a noisier,
-    lower-scoring candidate can tie with the leader while the baseline, stably
-    closer, cannot — and the selection would freeze a rule the held-out
-    comparison then shows does not beat the baseline.
+    Outperforming the baseline is required because the band is per candidate.
+    Without that requirement a noisier, lower-scoring candidate could tie with
+    the leader while the baseline, stably closer, could not, and a rule that
+    does not outperform the baseline would be chosen.
     """
     beaters = [name for name in order if name != baseline and beats_baseline[name]]
     if not beaters:
@@ -147,27 +136,3 @@ def freeze(order: list[str], score: dict[str, float], paired_sd: dict[str, float
         line = "candidate order"
     return {"best_by_score": best_by_score(order, score), "beaters": beaters,
             "tied": tied, "winner": winner, "decided_by": line}
-
-
-def freeze_unguarded(order: list[str], score: dict[str, float],
-                     paired_sd: dict[str, float], size: dict[str, int]) -> dict:
-    """The freeze rule without the baseline guard, kept so that the reading it
-    produces stands beside the guarded one."""
-    best = best_by_score(order, score)
-    tied = [name for name in order if score[best] - score[name] <= paired_sd[name]]
-    winner = min(tied, key=lambda name: (size[name], order.index(name)))
-    return {"best_by_score": best, "tied": tied, "winner": winner}
-
-
-def freeze_marginal(order: list[str], score: dict[str, float], sd: dict[str, float],
-                    size: dict[str, int]) -> dict:
-    """The marginal-band freeze rule. Its tie band is one *marginal* bootstrap
-    standard deviation of the best candidate's own correlation, which ignores
-    that every candidate is scored on the same banks and so is far wider than
-    the difference at issue."""
-    best = best_by_score(order, score)
-    band = score[best] - sd[best]
-    tied = [name for name in order if score[name] >= band]
-    winner = min(tied, key=lambda name: (size[name], order.index(name)))
-    return {"best_by_score": best, "tie_band_low": float(band), "tied": tied,
-            "winner": winner}

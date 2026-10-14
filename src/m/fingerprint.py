@@ -12,6 +12,9 @@ from m.runlog import REPO_ROOT
 
 def _git(*args: str) -> str:
     out = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit("a Run records the commit it ran from, so Runs launch only "
+                         f"from a git clone of the repository: {out.stderr.strip()}")
     return out.stdout.strip()
 
 

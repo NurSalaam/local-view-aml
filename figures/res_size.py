@@ -3,12 +3,10 @@
 Data: Experiment 1, the `shortfall` checks on HI-Medium for the tree
 and GNN families. Each check's `banks.csv` gives per bank the shortfall
 Delta_B (`delta`) and the bank's test-window payments (`test_rows`, payments
-with the bank at either end). The Spearman rho printed in the panel is the
-recorded size gradient, `observed.size_gradient` of the `shortfall_shuffled`
-checks, which the script asserts against a recomputation. Runs are found by
+with the bank at either end). The Spearman rho printed in the panel is computed
+here, between the shortfall and the natural log of size. Runs are found by
 scanning Experiment 1's Run log.
 """
-import json
 from pathlib import Path
 
 import matplotlib as mpl
@@ -48,11 +46,8 @@ def signed(value, places):
 cells = {}
 for family, _ in FAMILIES:
     observed_dir = find(RUNS, check="shortfall", dataset="HI-Medium", family=family)
-    shuffled_dir = find(RUNS, check="shortfall_shuffled", dataset="HI-Medium", family=family)
     banks = pd.read_csv(observed_dir / "artifacts" / "banks.csv", dtype={"bank": str})
-    rho = json.loads((shuffled_dir / "metrics.json").read_text())["observed"]["size_gradient"]
-    recomputed = spearmanr(banks.delta, np.log(banks.test_rows)).statistic
-    assert abs(rho - recomputed) < 1e-9, (family, rho, recomputed)
+    rho = spearmanr(banks.delta, np.log(banks.test_rows)).statistic
     cells[family] = (observed_dir.name, banks, rho)
 
 all_banks = [banks for _, banks, _ in cells.values()]

@@ -1,17 +1,22 @@
 #!/usr/bin/env python
-"""Experiment 2's analysis Runs.
+"""Experiment 2's analysis Runs (Chapter 4; Appendix C).
 
-One ``components`` Run per family reads the four cells — solo and global from
-Experiment 1, C-local and C-global from Experiment 2 — through one seeded set of joint-bootstrap
-draws of the test window, so every difference is paired. One ``dial`` Run per
-family reads the examples-dial curves against Experiment 1's solo Runs at the "all"
-level. One ``secondpath`` Run per family reads the other path through the grid, by way
-of the own-pool network-sight cell.
+One ``components`` Run per detector (tree family, GNN family, blind tree)
+reads the decomposition of the shortfall along path 1 from four scenarios --
+(ledger, own) and (network, all) from Experiment 1, (ledger, qualifying) and
+(network, qualifying) from Experiment 2 -- through one seeded set of
+joint-bootstrap draws of the test window, so every difference is paired. One
+``secondpath`` Run per detector reads path 2 through the grid, by way of
+(network, own). The ``sightcheck`` Run reads the GNN family's value of sight
+on path 1 with the count held equal (``gnn_cglobaldup`` in place of
+(network, qualifying)). One ``dial`` Run per family reads the case reduction
+against Experiment 1's solo Runs at the full count. ``all`` runs every one of
+them.
 
   uv run python scripts/exp2_analysis.py components <family>
-  uv run python scripts/exp2_analysis.py dial <family>
-  uv run python scripts/exp2_analysis.py sightcheck
   uv run python scripts/exp2_analysis.py secondpath <family>
+  uv run python scripts/exp2_analysis.py sightcheck
+  uv run python scripts/exp2_analysis.py dial <family>
   uv run python scripts/exp2_analysis.py all
   uv run python scripts/exp2_analysis.py status
 """
@@ -42,38 +47,28 @@ from m.stats import (heterogeneity, leave_one_out, null_q_check,  # noqa: E402
                      weighted_average_precision)
 
 KEY = exp2.KEY
-SMOKE = exp2.SMOKE
-REPLICATES = 50 if SMOKE else 1000
+REPLICATES = 1000
 CHUNK = 100
 SEED = 0
 SIDES = ("solo", "clocal", "cglobal", "global")
 COMPONENTS = {"examples": ("clocal", "solo"), "sight": ("cglobal", "clocal"),
               "stub": ("global", "cglobal"), "total": ("global", "solo")}
 COMPONENT_ORDER = ["examples", "sight", "stub", "total"]
-GATED = ("examples", "sight")
 PAIRING = {"tree": "median_over_grid", "blind": "median_over_grid",
            "gnn": "mean_over_seeds"}
 
-# Fixed before the Run: D is Experiment 1's weighted
-# mean shortfall per family and the threshold is D/4, not changed after the
-# result. The weights are Experiment 1's per-bank inverse-variance weights (1/s_B^2 from
-# the Experiment 1 shortfall Run's banks.csv), frozen with the draw seed and the roster.
-D_EXP1 = {"tree": 0.1416, "gnn": 0.2503}
-THRESHOLD = {"tree": 0.0354, "gnn": 0.0626}
 GNN_INTERVAL_NOTE = ("between-seed variance folded into the weighted-mean "
                      "interval: each replicate's per-bank component is "
                      "perturbed by an independent normal draw of variance "
                      "seed_var/3 (default_rng(0), components in fixed "
                      "order), as Experiment 1's assumption-free null does")
 
-DIAL_RULE = {
-    "tree": "the drop sits within the bank's tuning band when the median "
-            "test AP over the eight settings at the lowest level stays at or "
-            "above the lowest per-setting test AP at the 'all' level (the "
-            "per-setting spread, read on the levels)",
-    "gnn": "the drop sits within the bank's seed band when the mean test AP "
-           "over the draws at the lowest level stays at or above the lowest "
-           "of Experiment 1's three solo seeds' test AP",
+DIAL_RANGE = {
+    "tree": "band_all is the lowest and highest per-setting test AP over the "
+            "eight settings at the full count; ap_all is their median",
+    "gnn": "band_all is the lowest and highest test AP of Experiment 1's "
+           "three solo seeds at the full count; ap_all is the seed-0 Run's, "
+           "the case reduction's fixed seed",
 }
 
 
@@ -119,7 +114,7 @@ def weights_run(done1: dict, family: str) -> tuple[Path, dict]:
     found = exp1_analysis.shortfall_run(done1, KEY, family)
     if found is None:
         raise SystemExit(f"Experiment 1 shortfall Run for {KEY}/{family} not found; "
-                         f"the frozen weights come from it")
+                         f"the weights come from it")
     return found
 
 
@@ -255,7 +250,7 @@ def component_estimates(boot: dict, family: str) -> dict:
 def weighted_mean_reading(labels: list[str], est: dict, weights: np.ndarray,
                           component: str, family: str,
                           rng: np.random.Generator) -> dict:
-    """The roster-weighted mean of one component under Experiment 1's frozen weights,
+    """The roster-weighted mean of one component under Experiment 1's weights,
     with its interval from the shared draws (GNN: seed noise folded in)."""
     deltas = np.array([est[g][component]["delta"] for g in labels])
     reps = np.stack([est[g][component]["delta_reps"] for g in labels], axis=1)
@@ -272,15 +267,6 @@ def weighted_mean_reading(labels: list[str], est: dict, weights: np.ndarray,
             "replicates_valid": int(finite.sum())}
 
 
-def component_outcome(reading: dict, threshold: float) -> str:
-    lo, hi = reading["ci95"]
-    if lo <= 0.0 <= hi and hi < threshold:
-        return "negligible"
-    if lo > 0.0 and lo > threshold:
-        return "matters"
-    return "indeterminate"
-
-
 # ----------------------------------------------------------- components --
 
 def components_config(family: str, dirs: dict, wpath: Path) -> dict:
@@ -290,8 +276,6 @@ def components_config(family: str, dirs: dict, wpath: Path) -> dict:
               "cells": list(SIDES),
               "components": {k: f"{hi} minus {lo}"
                              for k, (hi, lo) in COMPONENTS.items()},
-              "gated": list(GATED),
-              "stub_and_total": "descriptive, not claimed",
               "pairing": PAIRING[family], "replicates": REPLICATES,
               "seed": SEED, "chunk": CHUNK,
               "weights": "Experiment 1's per-bank inverse-variance weights, 1/s_B^2 "
@@ -305,9 +289,6 @@ def components_config(family: str, dirs: dict, wpath: Path) -> dict:
                   "clocal": [_hash_of(d) for d in dirs["clocal"]],
                   "cglobal": [_hash_of(d) for d in dirs["cglobal"]]},
               "features_version": exp1.FEATURES_VERSION}
-    if family in THRESHOLD:
-        config["D"] = D_EXP1[family]
-        config["threshold_D_over_4"] = THRESHOLD[family]
     if family == "gnn":
         config["gnn_version"] = exp1.GNN_VERSION
         config["seeds"] = exp2.SEEDS
@@ -316,8 +297,6 @@ def components_config(family: str, dirs: dict, wpath: Path) -> dict:
         config["placebo"] = ("own fields ignore the network, so C-local and "
                              "C-global scores must be bit-identical and the "
                              "value of sight exactly zero")
-    if SMOKE:
-        config["smoke"] = {"banks": exp1.SMOKE_BANKS}
     return config
 
 
@@ -333,8 +312,6 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
     assert set(labels) == set(banks_csv.index)
     se_exp1 = banks_csv.loc[labels, "se"].to_numpy()
     weights = 1.0 / se_exp1 ** 2
-    if family in D_EXP1 and not SMOKE:
-        assert round(wmetrics["primary"]["weighted_mean"], 4) == D_EXP1[family]
 
     placebo = None
     if family == "blind":
@@ -353,8 +330,6 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
     readings, spread = {}, {}
     for name in COMPONENT_ORDER:
         reading = weighted_mean_reading(labels, est, weights, name, family, rng)
-        if family in THRESHOLD and name in GATED:
-            reading["outcome"] = component_outcome(reading, THRESHOLD[family])
         deltas = np.array([est[g][name]["delta"] for g in labels])
         ses = np.array([est[g][name]["se"] for g in labels])
         reps = np.stack([est[g][name]["delta_reps"] for g in labels], axis=1)
@@ -366,7 +341,7 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
             loo = leave_one_out(labels, deltas, ses)
             spread[name] = {**het, "null_check": null, "leave_one_out": loo}
         else:
-            spread[name] = {"degenerate": "every bank's wobble is zero"}
+            spread[name] = {"degenerate": "every bank's error bar is zero"}
         spread[name] |= {"descriptive_only": True,
                          "delta_range": [float(deltas.min()), float(deltas.max())]}
         readings[name] = reading
@@ -400,8 +375,6 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
            "artifacts": artifacts}
     if placebo is not None:
         out["placebo"] = placebo
-    if family in THRESHOLD:
-        out["threshold_D_over_4"] = THRESHOLD[family]
     return out
 
 
@@ -418,11 +391,10 @@ def cmd_components(family: str, done1: dict | None = None,
                   lambda config, run_dir: components_metrics(
                       family, dirs, wpath, wmetrics, run_dir),
                   done=done2)
-    for name in GATED:
+    for name in COMPONENT_ORDER:
         r = metrics["readings"][name]
         print(f"components {family} {name}: mean {r['weighted_mean']:+.4f} "
-              f"ci [{r['ci95'][0]:+.4f}, {r['ci95'][1]:+.4f}]"
-              + (f" -> {r['outcome']}" if "outcome" in r else ""), flush=True)
+              f"ci [{r['ci95'][0]:+.4f}, {r['ci95'][1]:+.4f}]", flush=True)
     return metrics
 
 
@@ -521,7 +493,7 @@ def cmd_sightcheck() -> dict | None:
 # ------------------------------------------------------------ secondpath --
 
 # Each quantity is a signed sum of cells, read per setting (tree) or per seed
-# (GNN) and then reduced as the four components are. Fixed before the Run.
+# (GNN) and then reduced as the four components are.
 SECOND_PATH = {
     "sight_own": (("nown", 1), ("solo", -1)),
     "examples_network": (("cglobal", 1), ("nown", -1)),
@@ -529,7 +501,6 @@ SECOND_PATH = {
     "examples_over_sight_path1": (("clocal", 2), ("solo", -1), ("cglobal", -1)),
     "examples_over_sight_path2": (("cglobal", 1), ("nown", -2), ("solo", 1)),
 }
-QUARTER_RULED = ("sight_own", "examples_network")
 HEADLINE = {"path1": "examples_over_sight_path1",
             "path2": "examples_over_sight_path2"}
 COPY_WEIGHTED = "_copyweighted"
@@ -631,15 +602,11 @@ def combination_estimates(boot: dict, family: str, combos: dict) -> dict:
 def second_path_config(family: str, dirs: dict, wpath: Path,
                        components: Path) -> dict:
     config = components_config(family, dirs, wpath)
-    del config["gated"]
     combos = second_path_combinations(family)
     config |= {
-        "gate": "none; the reading closed on the four cells",
         "check": "secondpath", "cells": list(second_path_sides(family)),
         "quantities": {name: " ".join(f"{k:+d} {c}" for c, k in terms)
                        for name, terms in combos.items()},
-        "quarter_ruled": [n for n in combos
-                          if n.removesuffix(COPY_WEIGHTED) in QUARTER_RULED],
         "headline": ("mainly training examples holds on a path when that "
                      "path's examples-over-sight difference has its 95 % "
                      "interval wholly above zero"),
@@ -700,8 +667,6 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
     readings = {}
     for name in combos:
         reading = weighted_mean_reading(labels, est, weights, name, family, rng)
-        if family in THRESHOLD and name.removesuffix(COPY_WEIGHTED) in QUARTER_RULED:
-            reading["outcome"] = component_outcome(reading, THRESHOLD[family])
         deltas = np.array([est[g][name]["delta"] for g in labels])
         reading["per_bank"] = {"median": float(np.median(deltas)),
                                "range": [float(deltas.min()), float(deltas.max())],
@@ -745,8 +710,6 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
                                                    replicates.astype(np.float32))}}
     if placebo is not None:
         out["placebo"] = placebo
-    if family in THRESHOLD:
-        out["threshold_D_over_4"] = THRESHOLD[family]
     return out
 
 
@@ -766,8 +729,7 @@ def cmd_secondpath(family: str) -> dict | None:
                   done=done2)
     for name, r in metrics["readings"].items():
         print(f"secondpath {family} {name}: mean {r['weighted_mean']:+.4f} "
-              f"ci [{r['ci95'][0]:+.4f}, {r['ci95'][1]:+.4f}]"
-              + (f" -> {r['outcome']}" if "outcome" in r else ""), flush=True)
+              f"ci [{r['ci95'][0]:+.4f}, {r['ci95'][1]:+.4f}]", flush=True)
     print(f"secondpath {family} headline: "
           f"{json.dumps(metrics['headline_mainly_examples'])}", flush=True)
     if "placebo" in metrics:
@@ -778,8 +740,8 @@ def cmd_secondpath(family: str) -> dict | None:
 # ------------------------------------------------------------------ dial --
 
 def dial_inputs(done1: dict, done2: dict, family: str) -> dict | None:
-    """Dial Run directories per (bank, level, draw), plus Experiment 1's adopted solo
-    Runs at the "all" level; None while incomplete."""
+    """Case-reduction Run directories per (bank, level, draw), plus Experiment
+    1's adopted solo Runs at the full count; None while incomplete."""
     roster = exp1.roster_for(KEY)
     table = exp2.dial_roster(KEY)
     check = f"dial_{family}"
@@ -817,7 +779,7 @@ def dial_config(family: str, inputs: dict) -> dict:
               "bank_rule": "the largest roster banks by training-window "
                            "laundering payments",
               "all_level": "adopted from Experiment 1's solo Runs by config identity",
-              "refutation": DIAL_RULE[family],
+              "range_at_full_count": DIAL_RANGE[family],
               "level_at_or_above_count": "collapses to the all level and is "
                                          "not fitted",
               "inputs": {"dial": {f"{b}:{lv}:{dr}": _hash_of(d)
@@ -831,8 +793,6 @@ def dial_config(family: str, inputs: dict) -> dict:
     if family == "gnn":
         config["seed"] = exp2.DIAL_GNN_SEED
         config["gnn_version"] = exp1.GNN_VERSION
-    if SMOKE:
-        config["smoke"] = {"banks": exp2.DIAL_BANKS}
     return config
 
 
@@ -851,8 +811,9 @@ def dial_metrics(family: str, inputs: dict, run_dir: Path) -> dict:
             band = [float(ap_all.min()), float(ap_all.max())]
             centre_all = float(np.median(ap_all))
         else:
-            # The curve is seed-0 throughout (the dial's fixed seed);
-            # the band prices seed noise from Experiment 1's three solo seeds.
+            # The curve is seed-0 throughout (the case reduction's fixed
+            # seed); the range prices seed noise from Experiment 1's three
+            # solo seeds.
             seed_aps = [_metrics(d)["test_ap"]
                         for d in inputs["all"][f"{bank}_seeds"]]
             band = [float(min(seed_aps)), float(max(seed_aps))]
@@ -860,10 +821,8 @@ def dial_metrics(family: str, inputs: dict, run_dir: Path) -> dict:
         by_level = {}
         for level in levels:
             draws = []
-            kept_sets = []
             for draw in range(exp2.DIAL_DRAWS):
                 m = _metrics(inputs["dial"][(bank, level, draw)])
-                kept_sets.append(m["kept_payments"])
                 if family == "tree":
                     aps = np.array([s["test_ap"] for s in m["settings"]])
                     centre = float(np.median(aps))
@@ -889,14 +848,10 @@ def dial_metrics(family: str, inputs: dict, run_dir: Path) -> dict:
         summary[bank] = {
             "train_pos": n_pos, "levels": levels, "band_all": band,
             "ap_all": centre_all, "by_level": by_level,
-            "drop_all_to_lowest": float(drop),
-            "unsupported": bool(by_level[lowest]["mean"] >= band[0])}
+            "drop_all_to_lowest": float(drop)}
     curve = pd.DataFrame(rows)
-    unsupported = [b for b, s in summary.items() if s["unsupported"]]
     return {"dataset_key": KEY, "family": family, "lowest_level": lowest,
-            "banks": {b: summary[b] for b in summary},
-            "nested_draws_hold": bool(kept_check),
-            "n_unsupported": len(unsupported), "unsupported_banks": unsupported,
+            "banks": summary, "nested_draws_hold": bool(kept_check),
             "n_banks": len(summary),
             "artifacts": {"curve": write_csv(run_dir, "curve",
                                              curve.set_index("bank"))},
@@ -914,20 +869,9 @@ def cmd_dial(family: str, done1: dict | None = None,
     metrics = run(exp2.EXPERIMENT, dial_config(family, inputs),
                   lambda config, run_dir: dial_metrics(family, inputs, run_dir),
                   done=done2)
-    print(f"dial {family}: {metrics['n_unsupported']} of {metrics['n_banks']} "
-          f"banks read unsupported; nesting "
+    print(f"dial {family}: {metrics['n_banks']} banks; nesting "
           f"{'holds' if metrics['nested_draws_hold'] else 'BROKEN'}", flush=True)
     return metrics
-
-
-def dial_run(done1: dict, done2: dict, family: str) -> tuple[Path, dict] | None:
-    inputs = dial_inputs(done1, done2, family)
-    if inputs is None:
-        return None
-    path = done2.get(config_hash(dial_config(family, inputs)))
-    if path is None:
-        return None
-    return path, _metrics(path)
 
 
 def cmd_all() -> int:
@@ -938,29 +882,45 @@ def cmd_all() -> int:
     done2 = completed(exp2.EXPERIMENT)
     for family in ("tree", "gnn"):
         cmd_dial(family, done1, done2)
+    cmd_sightcheck()
+    for family in ("tree", "gnn", "blind"):
+        cmd_secondpath(family)
     return 0
+
+
+def _state(done2: dict, config: dict | None) -> str:
+    if config is None:
+        return "inputs incomplete"
+    return "analysed" if config_hash(config) in done2 else "inputs complete"
 
 
 def cmd_status() -> int:
     done1 = completed(exp1.EXPERIMENT)
     done2 = completed(exp2.EXPERIMENT)
     for family in ("tree", "gnn", "blind"):
-        found = components_run(done1, done2, family)
         dirs = cell_dirs(done1, done2, family)
-        state = ("analysed" if found else
-                 "inputs complete" if dirs else "inputs incomplete")
-        print(f"components {family:6s} {state}")
+        config = (components_config(family, dirs, weights_run(done1, family)[0])
+                  if dirs else None)
+        print(f"components {family:6s} {_state(done2, config)}")
     for family in ("tree", "gnn"):
-        found = dial_run(done1, done2, family)
         inputs = dial_inputs(done1, done2, family)
-        state = ("analysed" if found else
-                 "inputs complete" if inputs else "inputs incomplete")
-        print(f"dial       {family:6s} {state}")
+        print(f"dial       {family:6s} "
+              f"{_state(done2, dial_config(family, inputs) if inputs else None)}")
+    dirs, found = sightcheck_dirs(done1, done2), components_run(done1, done2, "gnn")
+    config = (sightcheck_config(dirs, weights_run(done1, "gnn")[0], found[0])
+              if dirs and found else None)
+    print(f"sightcheck {'gnn':6s} {_state(done2, config)}")
+    for family in ("tree", "gnn", "blind"):
+        dirs = second_path_dirs(done1, done2, family)
+        found = components_run(done1, done2, family)
+        config = (second_path_config(family, dirs, weights_run(done1, family)[0],
+                                     found[0]) if dirs and found else None)
+        print(f"secondpath {family:6s} {_state(done2, config)}")
     return 0
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
     exp1.check_execution_settings()

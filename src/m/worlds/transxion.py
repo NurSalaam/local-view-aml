@@ -1,4 +1,4 @@
-"""TransXion (Chen 2026): canonical payments table and attribute tables.
+"""TransXion (Chen 2026): canonical payments table.
 
 Conventions this module owns:
 
@@ -8,10 +8,7 @@ Conventions this module owns:
   ties; the 60/20/20 split compares timestamps at the row-count quantile
   boundaries, so a tied second lands wholly on the later side.
 * Same-account rows are flagged, not dropped, mirroring the AMLworld
-  convention; the census check records the measured share.
-* The person and merchant tables attribute accounts by bank_account_number;
-  the census check verifies that their account-to-bank assignment agrees with
-  the payments table.
+  convention.
 """
 
 from __future__ import annotations
@@ -85,19 +82,3 @@ def _build(path: Path) -> None:
                         for k, v in df["split"].value_counts().sort_index().items()},
     }
     (path.parent / "payments_meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-
-
-def persons() -> pd.DataFrame:
-    """The person attribute table; identifiers stay strings."""
-    return pd.read_csv(
-        RAW / "person.csv",
-        dtype={"person_id": "string", "bank_account_number": "string",
-               "bank": "string"})
-
-
-def merchants() -> pd.DataFrame:
-    """The merchant attribute table; identifiers stay strings."""
-    return pd.read_csv(
-        RAW / "merchant.csv",
-        dtype={"merchant_id": "string", "bank_account_number": "string",
-               "bank": "string", "legal_representative_id": "string"})

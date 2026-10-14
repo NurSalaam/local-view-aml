@@ -1,15 +1,17 @@
 #!/usr/bin/env python
-"""Fetch the TransXion raw data and record a provenance manifest.
+"""Fetch the TransXion raw data, verify it against its pinned digest, and record
+a provenance manifest.
 
-TransXion (Chen 2026) is released as a git repository whose ``data/`` holds
-``tx.csv`` (the payments, stored in Git LFS), ``person.csv`` and
-``merchant.csv``. The repository is cloned at a pinned commit, the LFS object
-is pulled, and the three files are copied to ``data/raw/transxion``. Each file
-is checked against its pinned sha256; the manifest this script writes records
-the source, the pinned revision and each file's sha256 and byte size.
+TransXion (Chen 2026) is released as a git repository whose ``data/tx.csv``
+holds the payments, stored in Git LFS. The repository is cloned at a pinned
+commit, the LFS object is pulled, and ``tx.csv`` is copied to
+``data/raw/transxion``. The file is checked against the sha256 and byte size
+pinned in ``EXPECTED``, those of the copy the study read; the manifest this
+script writes records the source, the pinned revision and the file's sha256
+and byte size.
 
-Re-running is idempotent: when every file is present and matches its pinned
-sha256, nothing is fetched.
+Re-running is idempotent: when the file is present and matches its pin,
+nothing is fetched.
 
 Usage
 -----
@@ -32,10 +34,9 @@ from pathlib import Path
 
 SOURCE = "https://github.com/chaos-max/TransXion"
 REVISION = "53932595c37c23b9f55ea5ddf5984e4d57b88369"
-EXPECTED: dict[str, str] = {
-    "tx.csv": "d6c345f07a8d8e26123dba5fe4f6572ef198e04fb94f9b53facb3fef6d197a35",
-    "person.csv": "7144f32a5cc6be43f764653252a59edad1a4606e4e920020110e2cab2a1a4434",
-    "merchant.csv": "bc76ec3904042fad8f6aebc496070621482b72c4bdce7dfa7a2414b7ff622504",
+EXPECTED: dict[str, tuple[str, int]] = {
+    "tx.csv": ("d6c345f07a8d8e26123dba5fe4f6572ef198e04fb94f9b53facb3fef6d197a35",
+               245_159_741),
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,9 +51,9 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def save_manifest(files: dict[str, dict]) -> None:
-    man = {"source": SOURCE, "revision": REVISION,
-           "fetch_date": str(date.today()), "files": files}
+def save_manifest() -> None:
+    man = {"source": SOURCE, "revision": REVISION, "fetch_date": str(date.today()),
+           "files": {f: {"sha256": d, "bytes": b} for f, (d, b) in EXPECTED.items()}}
     (TARGET / "manifest.json").write_text(json.dumps(man, indent=2) + "\n")
 
 
@@ -67,7 +68,10 @@ def clone_into(dst: Path) -> None:
 def status(path: Path) -> str:
     if not path.exists():
         return "missing"
-    return "ok" if sha256(path) == EXPECTED[path.name] else "HASH MISMATCH"
+    digest, size = EXPECTED[path.name]
+    if path.stat().st_size != size or sha256(path) != digest:
+        return "HASH MISMATCH"
+    return "ok"
 
 
 def fetch(verify_only: bool) -> int:
@@ -85,11 +89,10 @@ def fetch(verify_only: bool) -> int:
         present = {f: status(TARGET / f) for f in EXPECTED}
 
     for fname, s in present.items():
-        print(f"[{s:>13}] {fname}")
+        print(f"[{s:>13}] {fname}  ({EXPECTED[fname][1]:,} B)")
     bad = sum(s != "ok" for s in present.values())
     if not bad:
-        save_manifest({f: {"sha256": EXPECTED[f], "bytes": (TARGET / f).stat().st_size}
-                       for f in EXPECTED})
+        save_manifest()
         print(f"\nmanifest: {TARGET / 'manifest.json'}")
     return bad
 
@@ -97,7 +100,8 @@ def fetch(verify_only: bool) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Fetch the TransXion raw data.")
     ap.add_argument("--verify-only", action="store_true",
-                    help="check present files against the pinned sha256; download nothing")
+                    help="check the present file against the pinned sha256 and byte "
+                         "size; download nothing")
     return fetch(ap.parse_args().verify_only)
 
 

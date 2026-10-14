@@ -1,27 +1,15 @@
 #!/usr/bin/env python
-"""The frame probe.
+"""The never-seen-counterparty cue (Chapter 3, Census).
 
-The census checks ask whether a world's banks are interchangeable. None of them
-asks whether the local frame itself creates predictive signal, as it does on
-the released AMLgentex data: inside one bank's
-ledger the trivial score "minus the earlier appearances of the counterparty"
-carries a detector by itself, while the same score on the global frame reads
-chance. The probe measures that property for any dataset, before any model
-trains on it.
-
-For every roster bank the probe scores that bank's exam paper by each
-trivial rule (`m.frame`) twice — once with the rule's history
-counted in the bank's own ledger, once with it counted on the global frame —
-and reports the two average precisions and their gap. Three of the rules
-cannot depend on the frame, and their two readings must be identical; the
-probe asserts that, which tests the history arithmetic against itself across
-the two frames rather than the identity of the exam paper. The paper is
-pinned separately: each bank's row carries the sha256 of the payment indices
-scored, in the form Experiment 1's solo Runs persist them, so the two logs can be
-compared without trusting either. Beside the rules the probe tabulates the
-laundering rate by the external endpoint's ledger history, split by whether
-the payment crosses banks. Nothing is trained, and every number is a function
-of the canonical frame alone.
+For every qualifying bank of a dataset, the probe takes the payments in the
+bank's test set between an account at the bank and an account at another
+bank, the counterparty, and counts the counterparty's earlier appearances in
+the bank's ledger (``m.frame``), capping the count at five. Pooled over the
+qualifying banks, one Run per dataset records the share of laundering
+payments among those with a never-seen counterparty and among those whose
+counterparty had appeared five times or more. The counts and laundering
+payments at every history, per bank and pooled, land in the Run's
+``artifacts/``. Nothing is trained.
 
 LightGBM is never imported here; nothing in the probe needs it, and its OpenMP
 runtime clashes with torch's on macOS when it loads first (see `scripts/exp1.py`).
@@ -45,15 +33,14 @@ import pandas as pd  # noqa: E402
 
 import exp1_data as data  # noqa: E402
 from m import completed, run, track  # noqa: E402
-from m import frame as rules  # noqa: E402
-from m.artifacts import sha256_of_array, write_csv  # noqa: E402
+from m.artifacts import write_csv  # noqa: E402
 from m.features import VERSION as FEATURES_VERSION  # noqa: E402
-from m.features import account_codes, own_fields, usd_rate_table  # noqa: E402
-from m.stats import average_precision  # noqa: E402
+from m.features import account_codes  # noqa: E402
+from m.frame import endpoint_history, external_history  # noqa: E402
 
 EXPERIMENT = "checks"
 CHECK = "frame_probe"
-BUCKETS = 5
+CAP = 5
 KEYS = ["transxion", data.AMLGENTEX_DATASET,
         "HI-Medium", "HI-Small", "LI-Small", "LI-Medium"]
 
@@ -64,13 +51,11 @@ def probe_config(key: str) -> dict:
             "dataset_key": key,
             "roster": {"min_test_pos": data.MIN_TEST_POS,
                        "exclude": data.excluded_banks(key)},
-            "frames": ["ledger", "global"],
-            "rules": {name: rules.RULE_DESCRIPTIONS[name] for name in rules.RULES},
-            "frame_invariant_rules": list(rules.FRAME_INVARIANT),
-            "history_buckets": BUCKETS,
-            "amount_rule": "the dataset-level USD table computed from the global "
-                           "training window (m.features.usd_rate_table)",
-            "probe_version": rules.VERSION, "features_version": FEATURES_VERSION}
+            "payments": "the bank's test-set payments with an account at "
+                        "another bank, the counterparty",
+            "history": "the counterparty's strictly earlier appearances in "
+                       "the bank's ledger, on either side",
+            "history_cap": CAP, "features_version": FEATURES_VERSION}
 
 
 def probe_metrics(key: str, run_dir: Path) -> dict:
@@ -82,141 +67,55 @@ def probe_metrics(key: str, run_dir: Path) -> dict:
     ts = df["ts"].to_numpy(np.int64)
     y = df["is_laundering"].to_numpy(np.int8)
     split = df["split"].to_numpy(np.int8)
-    amount_usd = own_fields(df, usd_rate_table(df))["amount_usd"]
-    n_rows = len(df)
     del df
 
-    payer_hist, payee_hist = rules.endpoint_history(payer, payee, ts)
-    pair_hist = rules.pair_history(payer, payee, ts)
-
-    rows, buckets, invariance = [], [], 0.0
+    rows = []
     for bank in track(list(roster.index), f"frame probe {key}"):
         code = int(roster.loc[bank, "code"])
         idx = np.flatnonzero((from_bank == code) | (to_bank == code))
         test = split[idx] == 2
-        paper = idx[test]
-        own_side = from_bank[idx] == code
-        ledger_payer, ledger_payee = rules.endpoint_history(payer[idx], payee[idx], ts[idx])
-        ledger_pair = rules.pair_history(payer[idx], payee[idx], ts[idx])
-        ledger = rules.rule_scores(ledger_payer[test], ledger_payee[test],
-                                   ledger_pair[test], own_side[test],
-                                   amount_usd[idx][test])
-        globally = rules.rule_scores(payer_hist[paper], payee_hist[paper],
-                                     pair_hist[paper], from_bank[paper] == code,
-                                     amount_usd[paper])
-        labels = y[paper]
+        test_set = idx[test]
+        crosses = from_bank[test_set] != to_bank[test_set]
+        ledger_payer, ledger_payee = endpoint_history(payer[idx], payee[idx], ts[idx])
+        history = np.minimum(external_history(ledger_payer[test], ledger_payee[test],
+                                              from_bank[test_set] == code), CAP)
+        labels = y[test_set]
+        for count in range(CAP + 1):
+            mask = crosses & (history == count)
+            rows.append({"bank": bank, "history": count, "payments": int(mask.sum()),
+                         "laundering": int(labels[mask].sum())})
 
-        row = {"bank": bank, "ledger_rows": int(len(idx)), "test_rows": int(test.sum()),
-               "test_pos": int(labels.sum()), "base_rate": float(labels.mean()),
-               "cross_bank_share_test": float((from_bank[paper] != to_bank[paper]).mean()),
-               "test_payment_sha256": sha256_of_array(paper)}
-        for name in rules.RULES:
-            local_ap = average_precision(labels, ledger[name])
-            global_ap = average_precision(labels, globally[name])
-            row[f"ledger_ap_{name}"] = local_ap
-            row[f"global_ap_{name}"] = global_ap
-            row[f"gap_{name}"] = local_ap - global_ap
-            if name in rules.FRAME_INVARIANT:
-                difference = float(np.abs(ledger[name] - globally[name]).max())
-                assert difference == 0.0, (
-                    f"bank {bank}: the frame-invariant rule {name!r} read "
-                    f"differently on the two frames (max |difference| "
-                    f"{difference:g}), so the ledger history and the global "
-                    f"history disagree where they cannot")
-                invariance = max(invariance, difference)
-
-        history = np.minimum(rules.external_history(ledger_payer[test], ledger_payee[test],
-                                                    own_side[test]), BUCKETS)
-        novel, familiar = history == 0, history == BUCKETS
-        row["novel_external_share"] = float(novel.mean())
-        row["novel_external_sar_rate"] = float(labels[novel].mean()) if novel.any() else np.nan
-        row["familiar_external_sar_rate"] = (float(labels[familiar].mean())
-                                             if familiar.any() else np.nan)
-        rows.append(row)
-
-        cross = (from_bank[paper] != to_bank[paper])
-        for crosses in (False, True):
-            for bucket in range(BUCKETS + 1):
-                mask = (cross == crosses) & (history == bucket)
-                if mask.any():
-                    buckets.append({"bank": bank, "cross_bank": crosses,
-                                    "external_history": bucket,
-                                    "rows": int(mask.sum()),
-                                    "sar_rate": float(labels[mask].mean())})
-
-    table = pd.DataFrame(rows).set_index("bank")
-    bucket_table = pd.DataFrame(buckets)
-    pooled = (bucket_table.groupby(["cross_bank", "external_history"])
-              .apply(lambda g: pd.Series({"rows": int(g["rows"].sum()),
-                                          "sar_rate": float((g["rows"] * g["sar_rate"]).sum()
-                                                            / g["rows"].sum())}),
-                     include_groups=False).reset_index())
-    rule_ap = {name: {"ledger_median": float(table[f"ledger_ap_{name}"].median()),
-                      "global_median": float(table[f"global_ap_{name}"].median()),
-                      "gap_median": float(table[f"gap_{name}"].median()),
-                      "gap_range": [float(table[f"gap_{name}"].min()),
-                                    float(table[f"gap_{name}"].max())]}
-               for name in rules.RULES}
-    rule_table = pd.DataFrame([
-        {"rule": name, "frame_invariant": name in rules.FRAME_INVARIANT,
-         "ledger_ap_median": entry["ledger_median"],
-         "global_ap_median": entry["global_median"],
-         "gap_median": entry["gap_median"],
-         "gap_min": entry["gap_range"][0], "gap_max": entry["gap_range"][1]}
-        for name, entry in rule_ap.items()]).set_index("rule")
-
-    def pooled_rate(crosses: bool, bucket: int) -> float | None:
-        hit = pooled[(pooled.cross_bank == crosses) & (pooled.external_history == bucket)]
-        return float(hit["sar_rate"].iloc[0]) if len(hit) else None
-
-    base_rate_median = float(table["base_rate"].median())
+    table = pd.DataFrame(rows)
+    pooled = table.groupby("history")[["payments", "laundering"]].sum()
+    rate = pooled["laundering"] / pooled["payments"]
     return {
-        "dataset_key": key, "world": data.DATASETS[key][0], "k": int(len(table)),
-        "n_rows": n_rows, "n_test_rows": int(table["test_rows"].sum()),
-        "base_rate_median": base_rate_median,
-        "rule_ap": rule_ap,
-        "cue_strength": {"rule": "external", **rule_ap["external"],
-                         "lift_over_base_rate":
-                             rule_ap["external"]["ledger_median"] / base_rate_median},
-        "frame_invariance": {"rules": list(rules.FRAME_INVARIANT),
-                             "max_abs_score_difference": invariance, "holds": True},
-        "novel_external": {
-            "share_of_test_rows_median": float(table["novel_external_share"].median()),
-            "sar_rate_median": float(table["novel_external_sar_rate"].median()),
-            "familiar_sar_rate_median": float(table["familiar_external_sar_rate"].median())},
-        "external_history_zero_cross_bank_sar_rate": pooled_rate(True, 0),
-        "external_history_cap_cross_bank_sar_rate": pooled_rate(True, BUCKETS),
+        "dataset_key": key, "world": data.DATASETS[key][0], "banks": int(len(roster)),
+        "laundering_rate_never_seen": float(rate.loc[0]),
+        "laundering_rate_seen_five_or_more": float(rate.loc[CAP]),
         "seconds": time.time() - t0,
-        "artifacts": {"banks": write_csv(run_dir, "banks", table),
-                      "rules": write_csv(run_dir, "rules", rule_table),
-                      "roster": write_csv(run_dir, "roster", roster),
-                      "history_buckets": write_csv(run_dir, "history_buckets",
-                                                   bucket_table.set_index("bank")),
-                      "history_buckets_pooled": write_csv(
-                          run_dir, "history_buckets_pooled",
-                          pooled.set_index(["cross_bank", "external_history"]))},
+        "artifacts": {"roster": write_csv(run_dir, "roster", roster),
+                      "history": write_csv(run_dir, "history", table.set_index("bank")),
+                      "history_pooled": write_csv(run_dir, "history_pooled",
+                                                  pooled.assign(laundering_rate=rate))},
     }
 
 
-def cmd_probe(key: str, done: dict) -> dict:
-    metrics = run(EXPERIMENT, probe_config(key),
-                  lambda config, run_dir: probe_metrics(key, run_dir), done=done)
-    cue = metrics["cue_strength"]
-    print(f"frame_probe {key}: k {metrics['k']} novelty AP {cue['ledger_median']:.4f} "
-          f"(ledger) against {cue['global_median']:.4f} (global), gap "
-          f"{cue['gap_median']:+.4f}, base rate {metrics['base_rate_median']:.4f}",
-          flush=True)
-    return metrics
-
-
 def main() -> int:
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        print(__doc__)
+        return 0
     keys = sys.argv[1:] or KEYS
     unknown = [key for key in keys if key not in data.DATASETS]
     if unknown:
         raise SystemExit(f"unknown dataset keys: {unknown}")
     done = completed(EXPERIMENT)
     for key in keys:
-        cmd_probe(key, done)
+        metrics = run(EXPERIMENT, probe_config(key),
+                      lambda config, run_dir: probe_metrics(key, run_dir), done=done)
+        print(f"frame_probe {key}: {metrics['banks']} banks; laundering share "
+              f"{metrics['laundering_rate_never_seen']:.3%} with a never-seen "
+              f"counterparty, {metrics['laundering_rate_seen_five_or_more']:.3%} "
+              f"with one seen {CAP} times or more", flush=True)
     return 0
 
 

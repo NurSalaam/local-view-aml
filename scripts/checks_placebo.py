@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""Placebo check: the blind-tree placebo.
+"""The placebo on HI-Small (Chapter 3, Checks on the measurement).
 
-The blind tree reads the payment's own fields only. Its local-sight and
-global-sight tables are assembled under the row rule through the same code
-paths the real detectors use — the global table indexes the pooled fields by
-copy, the local table is scattered bank by bank from each bank's own ledger
-— and its value of sight must be exactly zero: the two tables must be
-identical to the byte, and every grid setting's scores must match to the
-last digit. A nonzero reading points first to row handling, then to
-leakage.
+The blind tree reads the payment's own fields only. Its training tables under
+ledger sight and network sight are assembled under the row rule through the
+same code paths the real detectors use — the network-sight table indexes the
+pooled fields by copy, the ledger-sight table is scattered bank by bank from
+each bank's own ledger — and its value of sight must be exactly zero: the two
+tables must be identical to the byte, and the scores at every one of the
+eight configurations must match to the last digit. A nonzero reading points
+first to row handling, then to leakage.
 
 Usage:  uv run python scripts/checks_placebo.py
 """
@@ -89,15 +89,15 @@ def placebo(config: dict, run_dir) -> dict:
 
     settings = []
     for i, cfg in enumerate(GRID):
-        g, l = by_sight["global"][i], by_sight["local"][i]
-        identical = bool(np.array_equal(g["predictions"], l["predictions"]))
+        network, ledger = by_sight["global"][i], by_sight["local"][i]
+        identical = bool(np.array_equal(network["predictions"], ledger["predictions"]))
         settings.append({
             "params": cfg,
             "predictions_identical": identical,
-            "value_of_sight_ap": g["ap"] - l["ap"],
-            "value_of_sight_f1": g["f1"] - l["f1"],
-            "test_ap_global": g["ap"],
-            "test_f1_global": g["f1"],
+            "value_of_sight_ap": network["ap"] - ledger["ap"],
+            "value_of_sight_f1": network["f1"] - ledger["f1"],
+            "test_ap_global": network["ap"],
+            "test_f1_global": network["f1"],
         })
         print(f"  {cfg} identical={identical} "
               f"vos_ap={settings[-1]['value_of_sight_ap']:+.2e}", flush=True)
@@ -119,6 +119,9 @@ def placebo(config: dict, run_dir) -> dict:
 
 
 def main() -> int:
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        print(__doc__)
+        return 0
     metrics = run("checks", {"experiment": "checks", "check": "placebo",
                          "world": "amlworld", "dataset": DATASET,
                          "family": "blind_tree", "grid": GRID, "fixed": FIXED,

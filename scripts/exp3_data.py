@@ -1,12 +1,12 @@
-"""The data plane of Experiment 3 and its descriptor selection.
+"""The data that Experiment 3 and its selection read.
 
 Two kinds of thing are read here and nothing else is. **Ledgers** — Experiment 1's
-cached per-bank parquet files — supply the descriptor values, and they are
-read through one conversion so that the descriptor selection and Experiment 3 cannot disagree about what
-a bank's training window is. **Targets** — Experiment 1's `shortfall` Runs — supply each
-bank's measured Δ_B, its standard error s_B, and the 1,000 joint-bootstrap
-replicates behind them, always by artefact digest, so a stale copy cannot be
-read for the recorded one.
+cached per-bank parquet files — supply the label-free properties, and they are
+read through one conversion so that the selection and the stages of Experiment 3
+cannot disagree about what a bank's training window is. **Targets** — Experiment
+1's `shortfall` Runs — supply each bank's measured Δ_B, its error bar s_B, and
+the 1,000 joint-bootstrap replicates behind them, always by artefact digest, so
+a stale copy cannot be read for the recorded one.
 
 The conversion is where identity is settled, and it is settled the same way
 three times: accounts are keyed by the (bank, account) pair on one dictionary
@@ -42,8 +42,7 @@ from m.features import account_codes  # noqa: E402
 FIT_KEY = "HI-Medium"
 HOLDOUT_KEY = "HI-Small"
 KEYS = (FIT_KEY, HOLDOUT_KEY)
-FAMILIES = ("tree", "gnn", "blind")
-PRIMARY_FAMILIES = ("tree", "gnn")
+FAMILIES = ("tree", "gnn")
 
 TRAINING_SPLIT = 0
 WINDOW_RULE = ("split == 0 (the training window), same-account rows excluded, "
@@ -53,8 +52,8 @@ WINDOW_RULE = ("split == 0 (the training window), same-account rows excluded, "
 # ------------------------------------------------------------- ledgers --
 
 def training_rows(ledger: pd.DataFrame) -> pd.DataFrame:
-    """The rows a descriptor may count: the training window, bookkeeping
-    excluded."""
+    """The rows a label-free property may count: the training window,
+    bookkeeping excluded."""
     keep = (ledger["split"].to_numpy() == TRAINING_SPLIT) & ~ledger["same_account"].to_numpy()
     return ledger.loc[keep]
 
@@ -128,7 +127,7 @@ def shortfall_hash(key: str, family: str) -> str:
 
 def targets(key: str, family: str) -> pd.DataFrame:
     """Per bank: the measured Δ_B, s_B, the bootstrap-only error, the interval,
-    the exam paper's size and its base rate — the recorded artefact, verified
+    the test set's size and its base rate — the recorded artefact, verified
     against its digest."""
     path = shortfall_run(key, family)
     metrics = json.loads((path / "metrics.json").read_text())
@@ -153,10 +152,10 @@ def weights(target: pd.DataFrame) -> np.ndarray:
 
 
 def aligned(descriptors: pd.DataFrame, target: pd.DataFrame) -> pd.DataFrame:
-    """Descriptor values in the target's bank order, after asserting the two
-    cover exactly the same banks."""
+    """Label-free property values in the target's bank order, after asserting
+    the two cover exactly the same banks."""
     assert set(descriptors.index) == set(target.index), (
-        f"the descriptor table covers {len(descriptors)} banks and the target "
+        f"the table of properties covers {len(descriptors)} banks and the target "
         f"table {len(target)}; the symmetric difference is "
         f"{set(descriptors.index) ^ set(target.index)}")
     return descriptors.loc[target.index]

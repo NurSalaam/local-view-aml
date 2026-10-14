@@ -1,7 +1,8 @@
-"""GNN code path version 2 against a version-1 reference (unit test for the
-GNN selection's code-path equivalence gate).
+"""The GNN family's factored message computation (``m.gnn``) against the
+direct form it rewrites: the same initialisation draws, and logits and
+gradients equal within rounding.
 
-Run:  uv run python -m unittest tests.test_gnn_v2 -v
+Run:  uv run python -m unittest tests.test_gnn -v
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from m.gnn import (GNNConfig, PaymentGNN, _attach_edge_features,  # noqa: E402
                    edge_inputs, n_code_levels, payment_graph)
 
 
-class EdgeSAGEv1(nn.Module):
+class DirectEdgeSAGE(nn.Module):
     def __init__(self, in_dim, edge_dim, out_dim):
         super().__init__()
         self.message = nn.Sequential(nn.Linear(in_dim + edge_dim, out_dim),
@@ -41,19 +42,17 @@ class EdgeSAGEv1(nn.Module):
         return torch.relu(self.root(x) + agg)
 
 
-class PaymentGNNv1(nn.Module):
-    def __init__(self, n_codes, numeric_dim, cfg, head):
+class DirectPaymentGNN(nn.Module):
+    def __init__(self, n_codes, numeric_dim, cfg):
         super().__init__()
         self.embeddings = nn.ModuleList(
             [nn.Embedding(n, cfg.embed_dim) for n in n_codes])
         edge_dim = numeric_dim + cfg.embed_dim * len(n_codes)
         self.node0 = nn.Parameter(torch.zeros(cfg.hidden))
-        self.conv1 = EdgeSAGEv1(cfg.hidden, edge_dim, cfg.hidden)
-        self.conv2 = EdgeSAGEv1(cfg.hidden, edge_dim, cfg.hidden)
-        head_in = 2 * cfg.hidden + edge_dim if head == "edge" else cfg.hidden
-        self.head_kind = head
-        self.head = nn.Sequential(nn.Linear(head_in, cfg.hidden), nn.ReLU(),
-                                  nn.Linear(cfg.hidden, 1))
+        self.conv1 = DirectEdgeSAGE(cfg.hidden, edge_dim, cfg.hidden)
+        self.conv2 = DirectEdgeSAGE(cfg.hidden, edge_dim, cfg.hidden)
+        self.head = nn.Sequential(nn.Linear(2 * cfg.hidden + edge_dim, cfg.hidden),
+                                  nn.ReLU(), nn.Linear(cfg.hidden, 1))
 
     def edge_features(self, numeric, codes):
         parts = [numeric] + [emb(codes[:, j].long())
@@ -65,14 +64,12 @@ class PaymentGNNv1(nn.Module):
         x = self.node0.unsqueeze(0).expand(batch.num_nodes, -1)
         x = self.conv1(x, batch.edge_index, e)
         x = self.conv2(x, batch.edge_index, e)
-        if self.head_kind == "edge":
-            src, dst = batch.edge_label_index
-            seed = self.edge_features(batch.seed_numeric, batch.seed_codes)
-            return self.head(torch.cat([x[src], x[dst], seed], dim=1)).squeeze(1)
-        return self.head(x[:batch.batch_size]).squeeze(1)
+        src, dst = batch.edge_label_index
+        seed = self.edge_features(batch.seed_numeric, batch.seed_codes)
+        return self.head(torch.cat([x[src], x[dst], seed], dim=1)).squeeze(1)
 
 
-def v1_state_from_v2(model: PaymentGNN) -> dict:
+def direct_state(model: PaymentGNN) -> dict:
     return {k.replace(".lin.", ".message.0."): v
             for k, v in model.state_dict().items()}
 
@@ -92,7 +89,7 @@ def synthetic_batch(rng, n_nodes=2_000, n_edges=20_000, n_seeds=256,
     return batch, list(levels), numeric_dim
 
 
-class TestCodePathV2(unittest.TestCase):
+class TestFactoredMessage(unittest.TestCase):
     def setUp(self):
         self.cfg = GNNConfig()
         self.rng = np.random.default_rng(0)
@@ -100,48 +97,38 @@ class TestCodePathV2(unittest.TestCase):
     def test_initialisation_draws_are_identical(self):
         batch, levels, numeric_dim = synthetic_batch(self.rng)
         torch.manual_seed(7)
-        v1 = PaymentGNNv1(levels, numeric_dim, self.cfg, head="edge")
+        direct = DirectPaymentGNN(levels, numeric_dim, self.cfg)
         torch.manual_seed(7)
-        v2 = PaymentGNN(levels, numeric_dim, self.cfg, head="edge")
-        for a, b in zip(v1.state_dict().values(), v2.state_dict().values()):
+        factored = PaymentGNN(levels, numeric_dim, self.cfg)
+        for a, b in zip(direct.state_dict().values(), factored.state_dict().values()):
             self.assertTrue(torch.equal(a, b))
 
     def test_logits_equal_within_rounding_on_synthetic_batch(self):
         batch, levels, numeric_dim = synthetic_batch(self.rng)
         torch.manual_seed(7)
-        v2 = PaymentGNN(levels, numeric_dim, self.cfg, head="edge")
-        v1 = PaymentGNNv1(levels, numeric_dim, self.cfg, head="edge")
-        v1.load_state_dict(v1_state_from_v2(v2))
-        v1.eval(); v2.eval()
+        factored = PaymentGNN(levels, numeric_dim, self.cfg)
+        direct = DirectPaymentGNN(levels, numeric_dim, self.cfg)
+        direct.load_state_dict(direct_state(factored))
+        direct.eval()
+        factored.eval()
         with torch.no_grad():
-            diff = (v1(batch) - v2(batch)).abs().max().item()
+            diff = (direct(batch) - factored(batch)).abs().max().item()
         self.assertLess(diff, 1e-6)
 
     def test_gradients_agree_within_rounding(self):
         batch, levels, numeric_dim = synthetic_batch(self.rng)
         torch.manual_seed(7)
-        v2 = PaymentGNN(levels, numeric_dim, self.cfg, head="edge")
-        v1 = PaymentGNNv1(levels, numeric_dim, self.cfg, head="edge")
-        v1.load_state_dict(v1_state_from_v2(v2))
+        factored = PaymentGNN(levels, numeric_dim, self.cfg)
+        direct = DirectPaymentGNN(levels, numeric_dim, self.cfg)
+        direct.load_state_dict(direct_state(factored))
         target = torch.from_numpy(self.rng.integers(0, 2, batch.batch_size).astype(np.float32))
         loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(self.cfg.pos_weight))
-        loss_fn(v1(batch), target).backward()
-        loss_fn(v2(batch), target).backward()
-        g1 = torch.cat([p.grad.flatten() for p in v1.parameters()])
-        g2 = torch.cat([p.grad.flatten() for p in v2.parameters()])
+        loss_fn(direct(batch), target).backward()
+        loss_fn(factored(batch), target).backward()
+        g1 = torch.cat([p.grad.flatten() for p in direct.parameters()])
+        g2 = torch.cat([p.grad.flatten() for p in factored.parameters()])
         rel = ((g1 - g2).abs().max() / g1.abs().max().clamp(min=1e-12)).item()
         self.assertLess(rel, 1e-4)
-
-    def test_node_head_matches(self):
-        batch, levels, numeric_dim = synthetic_batch(self.rng)
-        torch.manual_seed(7)
-        v2 = PaymentGNN(levels, numeric_dim, self.cfg, head="node")
-        v1 = PaymentGNNv1(levels, numeric_dim, self.cfg, head="node")
-        v1.load_state_dict(v1_state_from_v2(v2))
-        v1.eval(); v2.eval()
-        with torch.no_grad():
-            diff = (v1(batch) - v2(batch)).abs().max().item()
-        self.assertLess(diff, 1e-6)
 
     @unittest.skipUnless((REPO / "data" / "interim" / "features" / "HI-Small_global.parquet").exists(),
                          "HI-Small feature cache absent")
@@ -169,12 +156,13 @@ class TestCodePathV2(unittest.TestCase):
         batch.seed_numeric = seed_numeric[rr]
         batch.seed_codes = torch.from_numpy(codes.astype(np.int32))[rr]
         torch.manual_seed(7)
-        v2 = PaymentGNN(n_code_levels(codes), seed_numeric.size(1), self.cfg, head="edge")
-        v1 = PaymentGNNv1(n_code_levels(codes), seed_numeric.size(1), self.cfg, head="edge")
-        v1.load_state_dict(v1_state_from_v2(v2))
-        v1.eval(); v2.eval()
+        factored = PaymentGNN(n_code_levels(codes), seed_numeric.size(1), self.cfg)
+        direct = DirectPaymentGNN(n_code_levels(codes), seed_numeric.size(1), self.cfg)
+        direct.load_state_dict(direct_state(factored))
+        direct.eval()
+        factored.eval()
         with torch.no_grad():
-            diff = (v1(batch) - v2(batch)).abs().max().item()
+            diff = (direct(batch) - factored(batch)).abs().max().item()
         self.assertGreater(batch.edge_index.size(1), 100_000)
         self.assertLess(diff, 1e-6)
 

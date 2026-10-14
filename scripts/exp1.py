@@ -1,10 +1,18 @@
 #!/usr/bin/env python
-"""Experiment 1 — the shortfall distribution.
+"""Experiment 1: The shortfall at each bank (Chapter 4).
 
-Every trainable unit is one Run keyed by (family, set-up, dataset, bank,
+Every trainable unit is one Run keyed by (family, scenario, dataset, bank,
 seed); the two gates and the analysis are Runs too. Stages are pure
-functions over the Run log and the derived caches, so a killed launcher
-resumes where it stopped and a finished unit is never recomputed.
+functions over the Run log and the derived caches, so an interrupted
+launcher resumes where it stopped and a finished unit is never recomputed.
+
+The tree and GNN families are fitted in the two scenarios of the shortfall:
+``solo``, the bank's own detector at (ledger, own), and ``global``, the
+detector with the global view at (network, all). Both run on HI-Medium,
+HI-Small, the two controls and the eleven other AMLgentex datasets; LI-Small
+and LI-Medium take the global scenario alone, for the comparison with
+published scores. The blind tree runs solo at every qualifying bank of
+HI-Medium and global on HI-Medium and the AMLgentex dataset.
 
   uv run python scripts/exp1.py plan                # jobs still to run
   uv run python scripts/exp1.py run <unit> [...]    # execute units in-process
@@ -18,8 +26,7 @@ Unit specs: ``ledgers:<key>``, ``gnn_inputs:<key>``, ``streamed_gate``,
 
 Execution settings come from the environment and are recorded in every Run
 config: M_TORCH_THREADS (4), M_LGB_THREADS_GLOBAL (10), M_LGB_THREADS_SOLO
-(2), M_DEVICE (cpu). M_SMOKE=1 shortens training and truncates rosters; it
-must be paired with M_EXPERIMENTS_DIR pointing away from the real Run log.
+(2), M_DEVICE (cpu).
 """
 from __future__ import annotations
 
@@ -63,18 +70,11 @@ from m.lgbdata import SEQUENCE_VERSION  # noqa: E402
 from m.lgbdata import (DS_PARAMS, RepeatedRowsSequence, RowGroupReader,  # noqa: E402
                        construct, fit_grid, predict_matrix, predict_rows,
                        setting_records)
-from m.runlog import REPO_ROOT, config_hash, experiments_root, find, index  # noqa: E402
+from m.runlog import REPO_ROOT, config_hash, experiments_root, find, index, select  # noqa: E402
 from m.stats import average_precision, minority_f1  # noqa: E402
 
 EXPERIMENT = "exp1"
 SEEDS = [0, 1, 2]
-SMOKE = os.environ.get("M_SMOKE") == "1"
-if SMOKE and experiments_root().resolve() == (REPO_ROOT / "experiments").resolve():
-    raise SystemExit("M_SMOKE=1 requires M_EXPERIMENTS_DIR pointing away from the "
-                     "real Run log")
-SMOKE_BANKS = int(os.environ.get("M_SMOKE_BANKS", "3"))
-SMOKE_EPOCHS = int(os.environ.get("M_SMOKE_EPOCHS", "2"))
-SMOKE_ROUNDS = 40
 TORCH_THREADS = int(os.environ.get("M_TORCH_THREADS", "4"))
 LGB_THREADS_GLOBAL = int(os.environ.get("M_LGB_THREADS_GLOBAL", "10"))
 LGB_THREADS_SOLO = int(os.environ.get("M_LGB_THREADS_SOLO", "2"))
@@ -83,27 +83,42 @@ EXECUTION = {"torch_threads": 4, "lgb_threads_global": 10,
              "lgb_threads_solo": 2, "device": "cpu"}
 
 FIXED_EXP1 = {k: v for k, v in FIXED.items() if k != "num_threads"}
-ROUNDS = SMOKE_ROUNDS if SMOKE else NUM_ROUND
+ROUNDS = NUM_ROUND
 GNN = GNNConfig(hidden=64, embed_dim=8, fanout=(10, 10), batch_size=4096,
-                lr=2e-3, pos_weight=6.0, max_epochs=SMOKE_EPOCHS if SMOKE else 15,
-                patience=3, loader_workers=0)
+                lr=2e-3, pos_weight=6.0, max_epochs=15, patience=3, loader_workers=0)
 ROSTER_RULE = {"min_test_pos": data.MIN_TEST_POS}
 FAMILIES = ("tree", "blind", "gnn")
 COLUMNS = {"tree": FEATURE_COLUMNS, "blind": OWN_FIELDS}
+BLIND_CHECKS = {"HI-Medium": ("blind_solo", "blind_global"),
+                data.AMLGENTEX_DATASET: ("blind_global",)}
 
-GATE_KEY = "transxion" if SMOKE else "HI-Small"
+GATE_KEY = "HI-Small"
 CODEPATH_GATE = "gnn_codepath_gate"
 STREAMED_GATE = "streamed_gate"
-PRIMARY_KEY = "HI-Small" if SMOKE else "HI-Medium"
-PRIMARY = (os.environ.get("M_SMOKE_KEYS", "HI-Small,transxion,sweden_100K_easy").split(",")
-           if SMOKE else data.PRIMARY)
-SENSITIVITY = [] if SMOKE else data.SENSITIVITY
+PRIMARY_KEY = "HI-Medium"
 CODEPATH_REFERENCE = {"experiment": "select_gnn", "seed": 0}
 CODEPATH_TOLERANCE = 1e-6
 
 GNN_INPUTS = REPO_ROOT / "data" / "interim" / "exp1" / "gnn_inputs"
 LOG_DIR = Path(os.environ.get("M_LOG_DIR", REPO_ROOT / "logs" / "exp1"))
 MEDIUM = ("HI-Medium", "LI-Medium")
+
+
+def dataset_checks(key: str) -> tuple[str, ...]:
+    """The unit checks run on one dataset. The blind tree runs where the
+    thesis reads it: solo and global on HI-Medium (pairing against each
+    scenario's own best configuration, and Experiment 2's own-pool placebo),
+    global on the AMLgentex dataset (the comparison with published scores)."""
+    trained = (("tree_global", "gnn_global") if key in data.ANCHOR_ONLY else
+               ("tree_solo", "tree_global", "gnn_solo", "gnn_global"))
+    return trained + BLIND_CHECKS.get(key, ())
+
+
+def shortfall_families(key: str) -> tuple[str, ...]:
+    """The families run in both scenarios on one dataset, so measured by a
+    shortfall."""
+    return tuple(f for f in FAMILIES
+                 if {f"{f}_solo", f"{f}_global"} <= set(dataset_checks(key)))
 
 
 # ----------------------------------------------------------------- units --
@@ -160,9 +175,6 @@ def base_config(unit: Unit) -> dict:
               "features_version": FEATURES_VERSION}
     if unit.bank != "-":
         config["bank"] = unit.bank
-    if SMOKE:
-        config["smoke"] = {"banks": SMOKE_BANKS, "epochs": SMOKE_EPOCHS,
-                           "rounds": SMOKE_ROUNDS}
     return config
 
 
@@ -210,8 +222,6 @@ def gate_config(unit: Unit) -> dict:
                   "torch_threads": TORCH_THREADS,
                   "sampling": "in-process, prefetch thread",
                   "features_version": FEATURES_VERSION}
-    if SMOKE:
-        config["smoke"] = {"epochs": SMOKE_EPOCHS, "rounds": SMOKE_ROUNDS}
     return config
 
 
@@ -224,11 +234,7 @@ def unit_config(unit: Unit) -> dict:
 
 
 def roster_for(key: str) -> pd.DataFrame:
-    table = data.read_roster(key)
-    if SMOKE and len(table) > SMOKE_BANKS:
-        picks = np.unique(np.linspace(0, len(table) - 1, SMOKE_BANKS).round().astype(int))
-        table = table.iloc[picks]
-    return table
+    return data.read_roster(key)
 
 
 # ------------------------------------------------------------- run log --
@@ -239,10 +245,14 @@ def done_index() -> dict:
 
 def selected_candidate() -> int:
     """The GNN selection verdict's winner, whose configuration must be ``GNN``."""
-    verdict = find(index(CODEPATH_REFERENCE["experiment"]), check="verdict")
+    runs = index(CODEPATH_REFERENCE["experiment"])
+    if not select(runs, check="verdict"):
+        raise SystemExit("the GNN selection has no verdict yet; run the GNN selection "
+                         "(scripts/select_gnn.py) through its verdict first")
+    verdict = find(runs, check="verdict")
     metrics = json.loads((verdict / "metrics.json").read_text())
-    assert metrics["frozen_configuration"] == GNN.as_dict(), \
-        f"the GNN selection froze candidate {metrics['winner']}, not Experiment 1's GNN"
+    assert metrics["configuration"] == GNN.as_dict(), \
+        f"the GNN selection chose candidate {metrics['winner']}, not Experiment 1's GNN"
     return metrics["winner"]
 
 
@@ -259,7 +269,7 @@ def adopted_dir(seed: int) -> Path:
 def adopted_run(unit: Unit) -> Path | None:
     """The GNN selection's winning Runs stand in for HI-Small's GNN global
     side."""
-    if SMOKE or unit.check != "gnn_global" or unit.key != "HI-Small":
+    if unit.check != "gnn_global" or unit.key != "HI-Small":
         return None
     return adopted_dir(unit.seed)
 
@@ -336,18 +346,21 @@ def committed_tree() -> list[str]:
     """Uncommitted paths: the code that produces a Run must be committed."""
     out = _sp.run(["git", "status", "--porcelain"], cwd=REPO_ROOT,
                   capture_output=True, text=True)
+    if out.returncode:
+        raise SystemExit("Runs launch only from a git clone of the repository: "
+                         + out.stderr.strip())
     return [line for line in out.stdout.splitlines() if line.strip()]
 
 
 def check_execution_settings() -> None:
     actual = {"torch_threads": TORCH_THREADS, "lgb_threads_global": LGB_THREADS_GLOBAL,
               "lgb_threads_solo": LGB_THREADS_SOLO, "device": DEVICE_NAME}
-    if not SMOKE and actual != EXECUTION:
+    if actual != EXECUTION:
         raise SystemExit(f"execution settings {actual} differ from the fixed "
                          f"{EXECUTION}; set M_TORCH_THREADS, "
                          f"M_LGB_THREADS_GLOBAL, M_LGB_THREADS_SOLO and M_DEVICE "
                          f"accordingly")
-    if not SMOKE and committed_tree():
+    if committed_tree():
         raise SystemExit("Runs launch only from a committed tree; uncommitted: "
                          + ", ".join(committed_tree()[:12]))
 
@@ -664,12 +677,12 @@ def _execute(unit: Unit, done: dict, cache: LedgerCache, sampler: RssSampler) ->
                                      run_dir)
         return run(EXPERIMENT, unit_config(unit), sampled(fn), done=done)
     if unit.check in ("tree_global", "blind_global"):
-        if unit.key in MEDIUM and gate_state(done, STREAMED_GATE) != "passed" and not SMOKE:
+        if unit.key in MEDIUM and gate_state(done, STREAMED_GATE) != "passed":
             raise SystemExit(f"{unit.spec} refused: the streamed gate has not passed")
         return run(EXPERIMENT, unit_config(unit),
                    sampled(lambda config, run_dir: tree_global_metrics(unit, run_dir)),
                    done=done)
-    if gate_state(done, CODEPATH_GATE) != "passed" and not SMOKE:
+    if gate_state(done, CODEPATH_GATE) != "passed":
         raise SystemExit(f"{unit.spec} refused: the GNN code-path gate has not passed")
     if unit.check == "gnn_solo":
         def fn(config, run_dir):
@@ -714,8 +727,8 @@ def cmd_run(specs: list[str]) -> int:
     done = done_index()
     cache = LedgerCache()
     print(f"run {len(specs)} units (root {experiments_root()}, torch threads "
-          f"{TORCH_THREADS}, lgb threads {LGB_THREADS_GLOBAL}/{LGB_THREADS_SOLO}, "
-          f"smoke {SMOKE})", flush=True)
+          f"{TORCH_THREADS}, lgb threads {LGB_THREADS_GLOBAL}/{LGB_THREADS_SOLO})",
+          flush=True)
     failures = 0
     for spec in specs:
         unit = parse_unit(spec)
@@ -784,6 +797,7 @@ def dataset_jobs(key: str, done: dict, exclude: set[str]) -> dict[str, list[Job]
     name are stable across re-plans; each lot carries only its units still
     to run and not in ``exclude`` (units in flight or failed this session)."""
     sc = size_class(key)
+    cells = dataset_checks(key)
     out: dict[str, list[Job]] = {k: [] for k in
                                  ("ledgers", "tree_solo", "tree_global", "gnn_inputs",
                                   "gnn_global", "gnn_solo")}
@@ -791,34 +805,39 @@ def dataset_jobs(key: str, done: dict, exclude: set[str]) -> dict[str, list[Job]
         out["ledgers"].append(Job(f"ledgers:{key}", (f"ledgers:{key}",), 1,
                                   MEM["ledgers"][sc]))
     todo = lambda u: u.spec not in exclude and recorded_dir(done, u) is None  # noqa: E731
+    tree_solo = [c for c in ("tree_solo", "blind_solo") if c in cells]
 
-    if data.ledgers_ready(key):
+    if not data.ledgers_ready(key):
+        if tree_solo:
+            out["tree_solo"].append(Job(f"tree_solo:{key}:pending", (), LGB_THREADS_SOLO,
+                                        MEM["tree_solo"][sc], (f"ledgers:{key}",)))
+        if "gnn_solo" in cells:
+            out["gnn_solo"].append(Job(f"gnn_solo:{key}:pending", (), GNN_THREADS,
+                                       MEM["gnn_solo"][sc],
+                                       (f"ledgers:{key}", CODEPATH_GATE)))
+    else:
         table = roster_for(key)
         banks = list(table.index)
         weights = [float(w) for w in table["touching"]]
-        for i, lot in enumerate(_split_lots(banks, weights, LOTS["tree_solo"][sc])):
-            specs = tuple(u.spec for b in lot
-                          for u in (Unit("tree_solo", key, b), Unit("blind_solo", key, b))
-                          if todo(u))
-            if specs:
-                out["tree_solo"].append(Job(f"tree_solo:{key}:lot{i}", specs,
-                                            LGB_THREADS_SOLO, MEM["tree_solo"][sc],
-                                            (f"ledgers:{key}",)))
-        for i, lot in enumerate(_split_lots(banks, weights, LOTS["gnn_solo"][sc])):
-            specs = tuple(u.spec for b in lot for s in SEEDS
-                          for u in (Unit("gnn_solo", key, b, s),) if todo(u))
-            if specs:
-                out["gnn_solo"].append(Job(f"gnn_solo:{key}:lot{i}", specs, GNN_THREADS,
-                                           MEM["gnn_solo"][sc],
-                                           (f"ledgers:{key}", CODEPATH_GATE)))
-    else:
-        out["tree_solo"].append(Job(f"tree_solo:{key}:pending", (), LGB_THREADS_SOLO,
-                                    MEM["tree_solo"][sc], (f"ledgers:{key}",)))
-        out["gnn_solo"].append(Job(f"gnn_solo:{key}:pending", (), GNN_THREADS,
-                                   MEM["gnn_solo"][sc],
-                                   (f"ledgers:{key}", CODEPATH_GATE)))
+        if tree_solo:
+            for i, lot in enumerate(_split_lots(banks, weights, LOTS["tree_solo"][sc])):
+                specs = tuple(u.spec for b in lot
+                              for u in (Unit(c, key, b) for c in tree_solo) if todo(u))
+                if specs:
+                    out["tree_solo"].append(Job(f"tree_solo:{key}:lot{i}", specs,
+                                                LGB_THREADS_SOLO, MEM["tree_solo"][sc],
+                                                (f"ledgers:{key}",)))
+        if "gnn_solo" in cells:
+            for i, lot in enumerate(_split_lots(banks, weights, LOTS["gnn_solo"][sc])):
+                specs = tuple(u.spec for b in lot for s in SEEDS
+                              for u in (Unit("gnn_solo", key, b, s),) if todo(u))
+                if specs:
+                    out["gnn_solo"].append(Job(f"gnn_solo:{key}:lot{i}", specs,
+                                               GNN_THREADS, MEM["gnn_solo"][sc],
+                                               (f"ledgers:{key}", CODEPATH_GATE)))
 
-    glob = [u.spec for u in (Unit("tree_global", key), Unit("blind_global", key)) if todo(u)]
+    glob = [u.spec for u in (Unit(c, key) for c in ("tree_global", "blind_global")
+                             if c in cells) if todo(u)]
     if glob:
         deps = (f"ledgers:{key}",) + ((STREAMED_GATE,) if key in MEDIUM else ())
         out["tree_global"].append(Job(f"tree_global:{key}", tuple(glob),
@@ -844,17 +863,18 @@ def dataset_jobs(key: str, done: dict, exclude: set[str]) -> dict[str, list[Job]
 def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     """Every job still to run, in launch priority (the
     tree family and the gates lead, HI-Medium's GNN global seeds follow,
-    LI-Medium last among the primary cells, the sensitivity GNN trailing)."""
-    per = {key: dataset_jobs(key, done, exclude) for key in PRIMARY}
-    sens = {key: dataset_jobs(key, done, exclude) for key in SENSITIVITY}
-    lead = [k for k in ("HI-Small", "HI-Medium", "transxion", data.AMLGENTEX_DATASET,
-                        "LI-Small") if k in per]
+    LI-Medium last among the six datasets of extract.py, the sensitivity GNN
+    trailing)."""
+    sensitivity = data.SENSITIVITY
+    per = {key: dataset_jobs(key, done, exclude) for key in data.PRIMARY + data.ANCHOR_ONLY}
+    sens = {key: dataset_jobs(key, done, exclude) for key in sensitivity}
+    lead = ["HI-Small", "HI-Medium", "transxion", data.AMLGENTEX_DATASET, "LI-Small"]
 
     def take(keys, kind, table=per):
-        return [j for key in keys if key in table for j in table[key][kind]]
+        return [j for key in keys for j in table[key][kind]]
 
     queue: list[Job] = take(lead, "ledgers")
-    if not gnn_inputs_path("HI-Small").exists() and "HI-Small" in per:
+    if not gnn_inputs_path("HI-Small").exists():
         queue += [j for j in per["HI-Small"]["gnn_inputs"]] or [
             Job("gnn_inputs:HI-Small", ("gnn_inputs:HI-Small",), 1,
                 MEM["gnn_inputs"]["small"], ("ledgers:HI-Small",))]
@@ -875,10 +895,10 @@ def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     for kind in ("ledgers", "tree_solo", "tree_global", "gnn_solo", "gnn_inputs",
                  "gnn_global"):
         queue += take(("LI-Medium",), kind)
-    for key in SENSITIVITY:
+    for key in sensitivity:
         queue += take((key,), "ledgers", sens) + take((key,), "tree_solo", sens) \
             + take((key,), "tree_global", sens)
-    for key in SENSITIVITY:
+    for key in sensitivity:
         for kind in ("gnn_inputs", "gnn_global", "gnn_solo"):
             queue += [Job(j.name, j.specs, j.threads, j.mem_gb, j.deps, j.cost, True)
                       for j in take((key,), kind, sens)]
@@ -898,8 +918,7 @@ def dep_satisfied(name: str, done: dict) -> bool:
     if kind == "gnn_inputs":
         return gnn_inputs_path(key).exists()
     if kind in (STREAMED_GATE, CODEPATH_GATE):
-        state = gate_state(done, kind)
-        return state != "unrun" if SMOKE else state == "passed"
+        return gate_state(done, kind) == "passed"
     return False
 
 
@@ -996,7 +1015,7 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
     install_signal_handlers(on_signal)
     signal.signal(signal.SIGINT, on_signal)
     print(f"launch: budget {budget} threads, machine {machine_gb} GB, root "
-          f"{experiments_root()}, smoke {SMOKE}; logs in {LOG_DIR}", flush=True)
+          f"{experiments_root()}; logs in {LOG_DIR}", flush=True)
     idle_polls = 0
     try:
         while True:
@@ -1026,7 +1045,7 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
                           f"the rest re-planned", flush=True)
             done = done_index()
             for gate in (STREAMED_GATE, CODEPATH_GATE):
-                if not SMOKE and gate_state(done, gate) == "failed" and gate not in failed:
+                if gate_state(done, gate) == "failed" and gate not in failed:
                     failed.add(gate)
                     print(f"{gate}: recorded pass=False; its dependants are blocked "
                           f"until the code that re-keys the gate changes", flush=True)

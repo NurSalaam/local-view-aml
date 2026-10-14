@@ -101,7 +101,7 @@ def joint_bootstrap(n_test: int, groups: dict, *, replicates: int = 1000,
     replicates.
 
     ``groups`` maps a label to ``{"idx": test-window positions of the
-    group's exam paper, "y": labels, "solo": (settings, n_g) scores,
+    group's test set, "y": labels, "solo": (settings, n_g) scores,
     "global": (settings, n_g) scores, "neg_weight": float}``; the
     ``neg_weight`` reweights negatives for the common-base-rate AP. Each
     replicate draws one multiplicity vector over all ``n_test`` payments and
@@ -175,7 +175,7 @@ def aggregate_shortfalls(boot: dict, metric: str, aggregate: str) -> dict:
 
 
 def heterogeneity(deltas: np.ndarray, ses: np.ndarray) -> dict:
-    """Cochran's Q and I-squared; groups with a degenerate wobble are
+    """Cochran's Q and I-squared; groups with an error bar of zero are
     excluded rather than given infinite weight."""
     usable = ses > 0
     d, s = deltas[usable], ses[usable]

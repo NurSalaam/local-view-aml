@@ -6,9 +6,9 @@ frame handed to :func:`graph_features` *is* the sight. Same-account payments
 contribute to no degree, sum, or fan feature but remain query rows.
 
 The USD rate table is a dataset-level constant computed from the global
-training window and shared by every set-up: a sight-dependent rate would make
-the payment's own USD amounts differ between local and global tables, and the
-blind-tree placebo could not read exactly zero.
+training window and shared by every scenario: a sight-dependent rate would make
+the payment's own USD amounts differ between the ledger-sight and network-sight
+tables, and the blind-tree placebo could not read exactly zero.
 
 Window intervals are open on both ends, (t - w, t): a payment at exactly
 t - w or t contributes nothing.

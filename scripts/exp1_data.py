@@ -1,20 +1,24 @@
 """Experiment 1's data plane: dataset keys, rosters, per-bank ledgers, and the pooled
-global-sight tables.
+network-sight tables.
 
 Datasets are the six keys of extract.py plus the eleven other released AMLgentex
-datasets (the sensitivity read), all read through extract.py's canonical frames. A
-roster is the banks with at least ``MIN_TEST_POS`` test-window laundering
-payments under either-endpoint attribution, the payment rail excluded on
-AMLworld. A bank's ledger — the payments touching it, all splits, canonical
-order, with the canonical payment index — is cached once per dataset under
-``data/interim/exp1/ledgers`` so per-bank workers never load a whole world
-(a derived cache; delete it and it rebuilds). The two account
-dictionaries are compacted to the ledger's own accounts (the bank roster is
-shared and stays whole); node codes and features are unchanged by it, since
-both are computed from the union of the two columns.
+datasets, all read through extract.py's canonical frames. ``PRIMARY`` holds
+HI-Medium, HI-Small and the two controls; ``ANCHOR_ONLY`` holds LI-Small and
+LI-Medium, which take only the global Runs that the comparison with published
+scores reads; ``SENSITIVITY`` holds the eleven others, read from the AMLgentex
+manifest on first use so that the module imports before the data are
+fetched. A roster is a dataset's qualifying banks: those with at least
+``MIN_TEST_POS`` laundering payments in their test set, the payment rail
+excluded on AMLworld. A bank's ledger (the payments touching it, all splits,
+canonical order, with the canonical payment index) is cached once per dataset
+under ``data/interim/exp1/ledgers`` so per-bank workers never load a whole
+world (a derived cache; delete it and it rebuilds). The two account dictionaries are compacted to the ledger's own
+accounts (the bank roster is shared and stays whole); node codes and features
+are unchanged by it, since both are computed from the union of the two columns.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
@@ -38,17 +42,32 @@ from m.runlog import REPO_ROOT  # noqa: E402
 from m.worlds import amlgentex, amlworld  # noqa: E402
 
 MIN_TEST_POS = 30
-SENSITIVITY = sorted(n for n in amlgentex.released_names() if n != AMLGENTEX_DATASET)
-DATASETS: dict[str, tuple[str, str]] = dict(EXTRACT_DATASETS) | {
-    name: ("amlgentex", name) for name in SENSITIVITY}
-PRIMARY = ["HI-Medium", "HI-Small", "transxion", AMLGENTEX_DATASET,
-           "LI-Small", "LI-Medium"]
+PRIMARY = ["HI-Medium", "HI-Small", "transxion", AMLGENTEX_DATASET]
+ANCHOR_ONLY = ["LI-Small", "LI-Medium"]
 CONTROLS = ["transxion", AMLGENTEX_DATASET]
 LEDGERS = REPO_ROOT / "data" / "interim" / "exp1" / "ledgers"
 
 
+@functools.cache
+def _sensitivity() -> tuple[str, ...]:
+    return tuple(sorted(n for n in amlgentex.released_names() if n != AMLGENTEX_DATASET))
+
+
+@functools.cache
+def _datasets() -> dict[str, tuple[str, str]]:
+    return dict(EXTRACT_DATASETS) | {name: ("amlgentex", name) for name in _sensitivity()}
+
+
+def __getattr__(name: str):
+    if name == "SENSITIVITY":
+        return list(_sensitivity())
+    if name == "DATASETS":
+        return _datasets()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def world_of(key: str) -> str:
-    return DATASETS[key][0]
+    return _datasets()[key][0]
 
 
 def excluded_banks(key: str) -> list[str]:
@@ -62,7 +81,7 @@ def frame(key: str) -> pd.DataFrame:
 
 
 def global_table(key: str) -> Path:
-    """The pooled global-sight feature table, built on first use."""
+    """The pooled network-sight feature table, built on first use."""
     path = table_path(key)
     if not path.exists():
         df = frame(key)
@@ -124,15 +143,12 @@ def ledgers_ready(key: str) -> bool:
     return (ledger_dir(key) / "roster.csv").exists() and (ledger_dir(key) / "copies.npy").exists()
 
 
-def write_ledgers(key: str, df: pd.DataFrame | None = None,
-                  out: Path | None = None) -> pd.DataFrame:
+def write_ledgers(key: str) -> pd.DataFrame:
     """Cache every roster bank's ledger, the roster, the dataset-level USD
-    table, and the row rule's copy count per payment; returns the roster.
-    ``df`` and ``out`` let a derived frame (Experiment 1's shuffled-bank-label control)
-    build the same cache in its own directory."""
-    out = ledger_dir(key) if out is None else out
+    table, and the row rule's copy count per payment; returns the roster."""
+    out = ledger_dir(key)
     out.mkdir(parents=True, exist_ok=True)
-    df = frame(key) if df is None else df
+    df = frame(key)
     table = roster(df, key)
     fb, tb, _ = bank_codes(df)
     for bank, row in table.iterrows():
@@ -155,7 +171,11 @@ def write_ledgers(key: str, df: pd.DataFrame | None = None,
 
 
 def read_roster(key: str) -> pd.DataFrame:
-    return pd.read_csv(ledger_dir(key) / "roster.csv", dtype={"bank": str}).set_index("bank")
+    path = ledger_dir(key) / "roster.csv"
+    if not path.exists():
+        raise SystemExit(f"{key}: Experiment 1 has not cached its ledgers yet; "
+                         "run scripts/exp1.py launch first")
+    return pd.read_csv(path, dtype={"bank": str}).set_index("bank")
 
 
 def read_rates(key: str) -> dict[str, float]:
@@ -167,7 +187,7 @@ def read_ledger(key: str, bank: str) -> pd.DataFrame:
 
 
 def main() -> int:
-    for key in sys.argv[1:] or PRIMARY:
+    for key in sys.argv[1:] or PRIMARY + ANCHOR_ONLY:
         t0 = time.time()
         table = write_ledgers(key)
         print(f"{key}: {len(table)} banks cached in {time.time() - t0:.0f}s "

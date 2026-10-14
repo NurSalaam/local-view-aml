@@ -4,9 +4,8 @@ Data: Experiment 1, the `shortfall` checks on HI-Medium for the tree
 and GNN families. Each bank is placed at its rank by the tree family's
 shortfall (`delta` in `banks.csv`) and its rank by the GNN family's; rank 1
 is the largest shortfall. The rank correlation printed in the panel is the
-one the verdict Run recorded (`criteria.2.rho` of the `verdict` check with
-`criterion_3_rule` "triple"); the script asserts that it reproduces from the
-two `banks.csv` files.
+one the verdict Run recorded (`criteria.2.rho` of the `verdict` check); the
+script asserts that it reproduces from the two `banks.csv` files.
 """
 import json
 from pathlib import Path
@@ -41,7 +40,7 @@ def banks_of(family):
 
 tree, gnn = banks_of("tree"), banks_of("gnn")
 assert list(tree.index) == list(gnn.index)
-verdict = find(RUNS, check="verdict", criterion_3_rule="triple")
+verdict = find(RUNS, check="verdict")
 rho = json.loads((verdict / "metrics.json").read_text())["criteria"]["2"]["rho"]
 recomputed = spearmanr(tree["delta"], gnn["delta"]).statistic
 assert abs(rho - recomputed) < 1e-9, (rho, recomputed)

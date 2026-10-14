@@ -12,8 +12,9 @@ Re-running is idempotent: a file already present that matches its pinned
 digest is left untouched; anything missing or mismatched is (re)fetched and
 verified.
 
-Each named set (e.g. ``HI-Small``) is three files: ``*_Trans.csv``,
-``*_accounts.csv`` and ``*_Patterns.txt``.
+Each named set (e.g. ``HI-Small``) is its payments file, ``*_Trans.csv``;
+HI-Medium adds ``HI-Medium_Patterns.txt``, the record of injected typologies
+that Experiment 3 reads.
 
 Usage
 -----
@@ -21,7 +22,7 @@ Usage
     uv run python scripts/fetch_ibm_aml.py --verify-only        # check what is present
 
 Requires Kaggle auth (``~/.kaggle/access_token`` or ``KAGGLE_USERNAME``/``KAGGLE_KEY``).
-The four sets total ~7.5 GB.
+The four sets total ~7.1 GB.
 """
 from __future__ import annotations
 
@@ -36,32 +37,17 @@ from pathlib import Path
 DATASET = "ealtman2019/ibm-transactions-for-anti-money-laundering-aml"
 SOURCE_DATE = "2025-07-08"  # upstream file creation date reported by the Kaggle API
 SETS = ["HI-Small", "LI-Small", "HI-Medium", "LI-Medium"]
-SUFFIXES = ["Trans.csv", "accounts.csv", "Patterns.txt"]
 EXPECTED: dict[str, tuple[str, int]] = {
     "HI-Small_Trans.csv": ("b19d39f515523373f991b689c07e11e7b0b95c17a2c27a87d91584ae16c5b040",
                            475_664_283),
-    "HI-Small_accounts.csv": ("786808526e33cfc441212dd6fccda7edfc24172149bed59c6ef59b186836b014",
-                              34_053_187),
-    "HI-Small_Patterns.txt": ("2c546b5ce6009e73851f0139af053cf845f08bf92f3bc82fe1eb937dec2ef39b",
-                              323_844),
     "LI-Small_Trans.csv": ("f7a9940339c78b5d1476071505b5867c0f5319640b9c4279d13f531bf965319d",
                            650_422_357),
-    "LI-Small_accounts.csv": ("f51322afe81859fefc58b09cae6068dbdacce78cd9dfb9ef2b693e5190ec4718",
-                              47_248_016),
-    "LI-Small_Patterns.txt": ("734c15b7ff4be1a04a3529bd1524b92c1e8b62289d3ce4881423596ee47a208f",
-                              99_156),
     "HI-Medium_Trans.csv": ("3126afb8155e7c8815d62bc5370549a7b5ae6bf7dfe872b3cd7813e66a3d7ff5",
                             3_031_783_420),
-    "HI-Medium_accounts.csv": ("0fb441d31df9ca0868803eebce718b7e85a4e385334222427c400a5ba64475f9",
-                               145_008_642),
     "HI-Medium_Patterns.txt": ("d612cd7ed6f7761c0e36f3b788dfbae68aa0842c77145b192c777c22daba5c9f",
                                2_279_574),
     "LI-Medium_Trans.csv": ("0fc89584453c97472b1bfde7ca746e21d7167140c22a6c4875272b197a4a3910",
                             2_976_436_978),
-    "LI-Medium_accounts.csv": ("d553f80638c183dd0b015f85810da7085a2fcf0adb4abee61f2ed609c693cab4",
-                               141_781_157),
-    "LI-Medium_Patterns.txt": ("6aa4c4041894eb272339ed10c862a4ee1ac53a469326ed9dd3dd9e35da0e625c",
-                               390_893),
 }
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +61,7 @@ def kaggle_exe() -> str:
 
 
 def files_for(sets: list[str]) -> list[str]:
-    return [f"{s}_{suf}" for s in sets for suf in SUFFIXES]
+    return [f for f in EXPECTED if f.split("_", 1)[0] in sets]
 
 
 def sha256(path: Path) -> str:
@@ -147,7 +133,8 @@ def main() -> int:
     ap.add_argument("sets", nargs="*", metavar="SET",
                     help=f"sets to fetch (default: all; any of: {', '.join(SETS)})")
     ap.add_argument("--verify-only", action="store_true",
-                    help="check present files against the pinned sha256; download nothing")
+                    help="check present files against the pinned sha256 and byte size; "
+                         "download nothing")
     args = ap.parse_args()
     unknown = [s for s in args.sets if s not in SETS]
     if unknown:

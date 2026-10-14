@@ -35,12 +35,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/m"]
 
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.uv]
-# The lock targets macOS on Apple silicon only; require wheels installable there
-# so resolution fails fast if a dependency lacks one.
+# The study ran on macOS on Apple silicon: resolution fails unless every
+# dependency has a wheel that installs there.
 required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]
 
-# PyG's compiled extensions come from PyG's flat index (macOS arm64, CPU).
+# PyG's compiled extensions come from PyG's flat index of CPU builds.
 [[tool.uv.index]]
 name = "pyg"
 url = "https://data.pyg.org/whl/torch-2.7.0+cpu.html"

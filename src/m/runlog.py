@@ -118,6 +118,7 @@ def run(
     if chash in index:
         return json.loads((index[chash] / "metrics.json").read_text())
 
+    environment = fingerprint(seed=seed, config_hash=chash)
     run_id = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
     run_dir = experiments_root() / experiment / "runs" / run_id
     (run_dir / "artifacts").mkdir(parents=True)
@@ -125,7 +126,7 @@ def run(
 
     started = _now()
     _write_atomic(run_dir / "config.json", canonical(config))
-    _write_atomic(run_dir / "fingerprint.json", fingerprint(seed=seed, config_hash=chash))
+    _write_atomic(run_dir / "fingerprint.json", environment)
     _write_atomic(run_dir / "status.json",
                   {"status": "running", "config_hash": chash, "started": started})
     try:

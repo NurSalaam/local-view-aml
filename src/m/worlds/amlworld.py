@@ -32,14 +32,6 @@ SETS = ["HI-Small", "LI-Small", "HI-Medium", "LI-Medium"]
 RAIL_BANK = "070"
 TRAIN_FRAC, VAL_FRAC = 0.6, 0.8
 
-# Published minority-class F1 (x100) of three GNNs, Altman 2024, Table 2.
-GNN_AGGREGATES = {
-    "HI-Small": {"GIN": 28.70, "GIN+EU": 47.73, "PNA": 56.77},
-    "LI-Small": {"GIN": 7.90, "GIN+EU": 20.62, "PNA": 16.45},
-    "HI-Medium": {"GIN": 42.30, "GIN+EU": 49.26, "PNA": 59.71},
-    "LI-Medium": {"GIN": 3.86, "GIN+EU": 6.19, "PNA": 27.73},
-}
-
 _STR = ["from_bank", "from_acct", "to_bank", "to_acct"]
 
 
@@ -95,21 +87,6 @@ def _build(dataset: str, path: Path) -> None:
                         for k, v in df["split"].value_counts().sort_index().items()},
     }
     (path.parent / f"{dataset}_meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-
-
-def pattern_member_rows(dataset: str) -> int:
-    """Count member transaction lines in the injected-patterns file."""
-    count = 0
-    in_block = False
-    with open(RAW / f"{dataset}_Patterns.txt") as fh:
-        for line in fh:
-            if line.startswith("BEGIN"):
-                in_block = True
-            elif line.startswith("END"):
-                in_block = False
-            elif in_block and line.strip():
-                count += 1
-    return count
 
 
 PATTERN_FAMILIES = ("BIPARTITE", "CYCLE", "FAN-IN", "FAN-OUT", "GATHER-SCATTER",
@@ -211,14 +188,3 @@ def pattern_family_codes(dataset: str,
                 "collisions": int(len(exact) - len(np.unique(rows))),
                 "families_seen": sorted(set(lines["family"]))}
     return codes, coverage
-
-
-def accounts_per_bank(dataset: str) -> pd.Series:
-    """All accounts the accounts file lists, active in the graph or not."""
-    table = pyarrow.csv.read_csv(
-        RAW / f"{dataset}_accounts.csv",
-        convert_options=pyarrow.csv.ConvertOptions(
-            column_types={"Bank ID": "string", "Account Number": "string"}),
-    )
-    df = table.to_pandas()
-    return df.groupby("Bank ID")["Account Number"].nunique()

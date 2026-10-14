@@ -1,12 +1,13 @@
-"""The label-using quantities behind Experiment 3's ceiling.
+"""The six quantities computed from labels, on which Experiment 3 builds the
+rules that use labels (Appendix D).
 
-Experiment 3's label-free rule is what a bank could actually compute. The ceiling is what
-a predictor could reach if it were handed the labels and the whole network, and
-the distance between them is the price of label-freeness. Six quantities in
-three groups: how much evidence a bank's laundering leaves (`laundering_count`,
-`test_base_rate`), where the generator put it (`laundering_internal_share`,
-`chain_pattern_share`), and what surrounds it (`class_homophily`,
-`pattern_entropy`).
+The rules on label-free properties are what a bank could compute from its
+ledger alone. The rules that use labels show whether the banks could be ranked
+better if labels were read. Six quantities in three groups: how many confirmed
+cases a bank holds and how much of its test set is laundering
+(`laundering_count`, `test_base_rate`), where the generator placed its cases
+(`laundering_internal_share`, `chain_pattern_share`), and what surrounds them
+(`class_homophily`, `pattern_entropy`).
 
 Data. The whole dataset's training window arrives as parallel arrays in
 canonical order — the two endpoints' account codes over one (bank, account)
@@ -43,7 +44,7 @@ GROUPS = {
 
 DESCRIPTIONS = {
     "laundering_count": "the bank's training-window laundering payments",
-    "test_base_rate": "laundering share of the bank's exam paper",
+    "test_base_rate": "laundering share of the bank's test set",
     "laundering_internal_share": "share of the bank's training-window laundering "
                                  "payments whose two endpoints both belong to it",
     "chain_pattern_share": "share of the bank's matched training-window laundering "

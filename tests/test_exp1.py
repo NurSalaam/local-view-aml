@@ -31,8 +31,6 @@ from m.stats import (aggregate_shortfalls, heterogeneity, joint_bootstrap,  # no
                      leave_one_out, null_q_check, spearman_bank_bootstrap,
                      weighted_average_precision, weighted_roc_auc)
 
-HI_SMALL_CACHE = REPO / "data" / "interim" / "features" / "HI-Small_global.parquet"
-
 
 class TestStreamedCopies(unittest.TestCase):
     def setUp(self):
@@ -256,10 +254,6 @@ class TestStatistics(unittest.TestCase):
         self.assertLess(out["boot_q05"], out["rho"] + 1e-9)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAnalysisRules(unittest.TestCase):
     def test_common_base_rate_weight_moves_every_bank_to_the_minimum(self):
         rates = {"a": (83, 42_215), "b": (45, 45_506), "c": (38, 35_961)}
@@ -271,9 +265,6 @@ class TestAnalysisRules(unittest.TestCase):
             self.assertAlmostEqual(pos / (pos + w * (rows - pos)), common, places=12)
 
     def test_lots_are_deterministic_and_cover_every_bank(self):
-        sys.path.insert(0, str(REPO / "scripts"))
-        os.environ.setdefault("M_SMOKE", "1")
-        os.environ.setdefault("M_EXPERIMENTS_DIR", "/tmp/exp1-test-scratch")
         from exp1 import _split_lots
 
         banks = [f"b{i}" for i in range(23)]
@@ -283,3 +274,7 @@ class TestAnalysisRules(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertEqual(sorted(x for lot in a for x in lot), sorted(banks))
         self.assertEqual(len(a), 5)
+
+
+if __name__ == "__main__":
+    unittest.main()

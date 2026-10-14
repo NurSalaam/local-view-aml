@@ -2,11 +2,13 @@
 
 Data: Experiment 4, the `policy` checks on HI-Medium for the tree and
 GNN families. Each check's `banks.csv` gives per bank its shortfall from
-experiment 1 (`delta_exp1`), the gain of the detector it ends with over its own
+Experiment 1 (`delta_exp1`), the gain of the detector it ends with over its own
 (`policy_gain`, zero where it abstained) and its quarter by confirmed cases
-(`quartile`). Runs are found by scanning Experiment 4's Run log. The weighted mean gain
-over the first quarter is recomputed with the weights 1/s_B^2 and asserted
-against the recorded `primary.weighted_mean`.
+(`quartile`). Runs are found by scanning Experiment 4's Run log. The weighted
+mean gain and the weighted mean shortfall over the first quarter are recomputed
+with the weights 1/s_B^2 and asserted against the recorded
+`primary.weighted_mean` and `threshold.weighted_mean_shortfall`; their ratio is
+the share of the shortfall recovered that the caption quotes.
 """
 import json
 from pathlib import Path
@@ -34,27 +36,28 @@ BLUE, RED = "#2a5d9f", "#c2352c"
 TEXT_SIZE = 10.1
 FAMILIES = (("tree", "(a) Tree family", BLUE), ("gnn", "(b) GNN family", RED))
 
-
-
 cells = {}
 for family, _, _ in FAMILIES:
     path = find(RUNS, check="policy", dataset="HI-Medium", family=family)
     banks = pd.read_csv(path / "artifacts" / "banks.csv", dtype={"bank": str})
+    metrics = json.loads((path / "metrics.json").read_text())
     first = banks[banks.quartile == 1]
     weights = 1.0 / first.weight_se_exp1 ** 2
-    recomputed = float((weights * first.policy_gain).sum() / weights.sum())
-    recorded = json.loads((path / "metrics.json").read_text())["primary"]["weighted_mean"]
-    assert abs(recomputed - recorded) < 1e-9, (family, recomputed, recorded)
-    cells[family] = (path.name, banks)
+    gain = float((weights * first.policy_gain).sum() / weights.sum())
+    shortfall = float((weights * first.delta_exp1).sum() / weights.sum())
+    assert abs(gain - metrics["primary"]["weighted_mean"]) < 1e-9, (family, gain)
+    assert abs(shortfall - metrics["threshold"]["weighted_mean_shortfall"]) < 1e-9, \
+        (family, shortfall)
+    cells[family] = (path.name, banks, gain / shortfall)
 
-low = min(min(b.delta_exp1.min(), b.policy_gain.min()) for _, b in cells.values()) - 0.05
-high = max(max(b.delta_exp1.max(), b.policy_gain.max()) for _, b in cells.values()) + 0.05
+low = min(min(b.delta_exp1.min(), b.policy_gain.min()) for _, b, _ in cells.values()) - 0.05
+high = max(max(b.delta_exp1.max(), b.policy_gain.max()) for _, b, _ in cells.values()) + 0.05
 
 figure, axes = plt.subplots(1, 2, figsize=(6.3, 4.1), sharex=True, sharey=True,
                             gridspec_kw=dict(left=0.105, right=0.985, bottom=0.215, top=0.94,
                                              wspace=0.07))
 for ax, (family, title, colour) in zip(axes, FAMILIES):
-    _, banks = cells[family]
+    _, banks, _ = cells[family]
     first = banks.quartile == 1
     ax.plot([low, high], [low, high], color=MUTED, lw=0.8, ls="--", zorder=1)
     ax.axhline(0, color=INK, lw=0.6, zorder=1)
@@ -90,8 +93,9 @@ figure.legend(handles=handles, loc="lower center", ncol=2, fontsize=TEXT_SIZE, f
 figure.savefig(OUT)
 print("saved", OUT)
 for family, _, _ in FAMILIES:
-    name, banks = cells[family]
+    name, banks, share = cells[family]
     first = banks[banks.quartile == 1]
     print(family, name, "banks", len(banks), "first quarter", len(first),
           "abstained", int((banks.policy_gain == 0).sum()),
-          "gain below zero", int((banks.policy_gain < 0).sum()))
+          "gain below zero", int((banks.policy_gain < 0).sum()),
+          f"share of the shortfall recovered {share:.2f}")

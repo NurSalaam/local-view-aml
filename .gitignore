@@ -6,8 +6,11 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# OS
+# OS and editors
 .DS_Store
+.idea/
+.vscode/
+*.swp
 
 # Raw data, caches and Run output are rebuilt by the pipeline
 /data

@@ -11,10 +11,9 @@ verified file's sha256 and byte size.
 
 Re-running is idempotent: a file already present that matches its pinned
 digest is left untouched; anything missing or mismatched is (re)fetched at the
-pinned revision and verified. Every repo holds ``tx_log.csv`` (the raw
-generator log, including the salary/spending pseudo-bank rows that the
-census checks filter); ``sweden_100K_difficult`` additionally ships
-``dataset_b.csv`` and ``dataset_c.csv``.
+pinned revision and verified. From each repo the study reads ``tx_log.csv``,
+the raw generator log, including the rows against the source and sink
+accounts that the loader drops.
 
 Usage
 -----
@@ -22,8 +21,9 @@ Usage
     uv run python scripts/fetch_amlgentex_released.py sweden_100K_easy   # one repo
     uv run python scripts/fetch_amlgentex_released.py --verify-only
 
-Total download is ~20.5 GB (the two ``sweden_1M`` repos are ~6.4 GB each).
-No authentication needed: the repos are public (MIT licence).
+Total download is ~19.2 GB (the two ``sweden_1M`` repos are ~6.4 GB each).
+No authentication needed: the repos are public (MIT licence), so the download
+sends no Hugging Face token, even one saved on the machine.
 """
 from __future__ import annotations
 
@@ -40,17 +40,12 @@ NAMESPACE = "AMLGentex"
 # name -> (pinned revision, {file: (sha256, bytes)})
 EXPECTED: dict[str, tuple[str, dict[str, tuple[str, int]]]] = {
     "sweden_100K_difficult": ("f09ec96982c58759b0475531e263dd065cbdd1f3", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
-        "dataset_b.csv": ("1103915d09cf474724da8168be1e8c32abcbe6afaf9ef4b950d42f8b49f6deb0", 628_887_087),
-        "dataset_c.csv": ("0d40d615f8e5323e407657e7f9725a96f01649094cb33b1ebdd9bce39b67eaae", 628_572_577),
         "tx_log.csv": ("d87e9742d019242ab1075076219c4c536cc8d082ca844590d7359f14d58666cb", 628_949_539),
     }),
     "sweden_100K_easy": ("9164f174032ba1f93361f07613c6c4df03634089", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("baade848ac187f2518a61b6cf02c1afa0a805e4940ada7f50a20803ee6dc8273", 633_864_438),
     }),
     "us_100K_difficult": ("4fe3c022c06e480f14922d95305570b6c3f66513", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("51fbdc09809762c10c030cc1b011518457f83cdd6cb2ae36ea625b96b9e2595e", 699_090_117),
     }),
     "spain_100K_easy": ("544ad1e80fd2cd7554340b930b846a2fd18a3e1e", {
@@ -69,19 +64,15 @@ EXPECTED: dict[str, tuple[str, dict[str, tuple[str, int]]]] = {
         "tx_log.csv": ("cac08c3abb7f8787481dc4e9794f66f3bc77499cbb79c6b5dab036d9b3a36d4b", 6_378_091_481),
     }),
     "sweden_100K_no_dist_change_easy": ("84a9ccdabeae6ae52aee645eb0799952dd781bb5", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("a3ab257c29cf497baf14184757f13124fc08122de54a9f9c48df9eb2075c5f8a", 631_752_969),
     }),
     "sweden_100K_dist_change_easy": ("f35f093330c376816d1fafec8d29a6e220323e35", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("caf97afcfdc68cb7cff21b1634e9b0c8a47bcd10ed0e8f370b3f56d05113a193", 633_199_615),
     }),
     "sweden_100K_no_dist_change_difficult": ("02477bf74d6fb6504af6cf63acc8cc1609d06746", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("1103915d09cf474724da8168be1e8c32abcbe6afaf9ef4b950d42f8b49f6deb0", 628_887_087),
     }),
     "sweden_100K_dist_change_difficult": ("4b236f8c692efeaf8e0378223d9a9f81f6a31935", {
-        "README.md": ("d8d7a46d41a1a37fe4f0a5f637bf55c649310185329127d8a2204632e480be17", 24),
         "tx_log.csv": ("0d40d615f8e5323e407657e7f9725a96f01649094cb33b1ebdd9bce39b67eaae", 628_572_577),
     }),
 }
@@ -139,7 +130,7 @@ def fetch(names: list[str], verify_only: bool) -> int:
             if state != "ok" and not verify_only:
                 print(f"[   fetching ] {name}/{fname} ...")
                 hf_hub_download(f"{NAMESPACE}/{name}", fname, repo_type="dataset",
-                                revision=revision, local_dir=TARGET / name)
+                                revision=revision, local_dir=TARGET / name, token=False)
                 state = status(name, fname)
             print(f"[{state:>13}] {name}/{fname}  ({size:,} B)")
             if state == "ok":
@@ -160,7 +151,8 @@ def main() -> int:
     ap.add_argument("repos", nargs="*", metavar="REPO",
                     help=f"repos to fetch (default: all twelve; any of: {', '.join(EXPECTED)})")
     ap.add_argument("--verify-only", action="store_true",
-                    help="check present files against the pinned sha256; download nothing")
+                    help="check present files against the pinned sha256 and byte size; "
+                         "download nothing")
     args = ap.parse_args()
     unknown = [r for r in args.repos if r not in EXPECTED]
     if unknown:

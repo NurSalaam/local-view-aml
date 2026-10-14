@@ -6,9 +6,9 @@ Conventions this module owns:
   ``data/raw/amlgentex/<name>/tx_log.csv``; the pattern column
   ``alertID`` lands as ``pattern_id``.
 * ``source`` and ``sink`` are pseudo-banks. ``is_sar`` propagates to a SAR
-  account's bookkeeping rows against them (97.8 % of flagged rows on the
-  smoke-tested released dataset), so every census statistic runs after
-  :func:`drop_pseudo`. The filter is exposed, not hard-wired, so the raw
+  account's bookkeeping rows against them (98 % of flagged rows on every
+  released dataset, as the census records), so every census statistic runs
+  after :func:`drop_pseudo`. The filter is exposed, not hard-wired, so the raw
   shares stay measurable.
 * The canonical row order is a stable sort by ``step``, file order breaking
   ties; :func:`temporal_split` cuts 60/20/20 at row-count quantiles of the
@@ -82,6 +82,9 @@ _DTYPES = {
 
 def released_names() -> list[str]:
     """Manifest-complete released datasets, in manifest order."""
+    if not (RELEASED / "manifest.json").exists():
+        raise SystemExit("the AMLgentex datasets are not fetched yet; run "
+                         "scripts/fetch_amlgentex_released.py first")
     manifest = json.loads((RELEASED / "manifest.json").read_text())
     names = []
     for name, repo in manifest["repos"].items():

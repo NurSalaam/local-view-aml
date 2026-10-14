@@ -1,13 +1,14 @@
-"""Experiment 2's split of the shortfall at HI-Medium's 107 qualifying banks, for Chapter 4.
+"""Experiment 2's decomposition of the shortfall at HI-Medium's 107 qualifying
+banks, for Chapter 4.
 
 Data: Experiment 2, the `components` check on HI-Medium for the tree and GNN
 families. Each Run's banks.csv holds one row per qualifying bank with the
-per-bank components (tree: median over the eight settings of the per-setting
-difference; GNN: mean over the three seeds); its metrics.json holds the
-weighted mean of each component under Experiment 1's weights 1/s_B^2 and the 95 %
-interval from the shared bootstrap draws (`readings`). The rows are path 1
-of the grid. Both Runs use the (network, qualifying) scenario as fitted, not
-its copy-weighted variant.
+per-bank components (tree: median over the eight configurations of the
+per-configuration difference; GNN: mean over the three seeds); its
+metrics.json holds the weighted mean of each component under Experiment 1's
+weights 1/s_B^2 and the 95 % interval from the shared bootstrap draws
+(`readings`). The rows are path 1 of the grid. Both Runs use the (network,
+qualifying) scenario as fitted, not its variant with the count held equal.
 """
 import json
 from pathlib import Path

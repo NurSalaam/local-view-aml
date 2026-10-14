@@ -1,13 +1,14 @@
 #!/usr/bin/env python
-"""Global-sight feature tables for the detector checks.
+"""The tree family's feature tables under network sight.
 
-One canonical extractor frame per (world, dataset) — AMLworld and TransXion
-already share the canonical payments schema; AMLgentex real transfers are
-adapted onto it (step days become epoch seconds, the single implicit currency
-maps every amount to itself under the USD rule). The pooled global-sight
-table (one row per payment; the row rule's global copies are identical, so
-the pooled table carries the same information without double-weighting
-cross-bank payments) is cached as parquet under ``data/interim/features``.
+One canonical frame per dataset: AMLworld and TransXion already share the
+canonical payments schema; the AMLgentex transfers are adapted onto it (step
+days become epoch seconds, and the single implicit currency maps every amount
+to itself under the USD rule). The pooled network-sight table (one row per
+payment; under network sight the row rule's two copies of a payment between
+banks are identical, so the pooled table carries the same information without
+counting such a payment twice) is cached as parquet under
+``data/interim/features``. Later stages build any missing table on first use.
 
 Usage:  uv run python scripts/extract.py [dataset ...]
 """
@@ -96,6 +97,9 @@ def load_column(key: str, column: str) -> np.ndarray:
 
 def main() -> int:
     args = sys.argv[1:]
+    if {"-h", "--help"} & set(args):
+        print(__doc__)
+        return 0
     for key in args or list(DATASETS):
         if table_path(key).exists():
             print(f"{key}: cached")

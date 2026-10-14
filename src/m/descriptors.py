@@ -1,9 +1,9 @@
-"""The ledger descriptors.
+"""The label-free properties of a bank's ledger.
 
-A *descriptor* is one number a bank can compute about itself from its own
-ledger, over the training window, without reading a label. Twelve of them, in
-six groups, are defined here; Experiment 3 asks whether they order the banks the way the
-shortfall does.
+A *label-free property* is one number a bank can compute about itself from its
+own ledger, over the training window, without reading a label. Twelve of them,
+in six groups, are defined here (Chapter 5); Experiment 3 asks whether they
+order the banks the way the shortfall does.
 
 Data. A bank's ledger arrives here as :class:`Ledger`, parallel arrays over the
 rows of that bank's training window with same-account rows already dropped
@@ -14,14 +14,14 @@ them is true on every row. ``counterparty_bank`` is the bank code of the
 endpoint that is not the bank's own, and −1 on the rows where both endpoints
 are. Nothing here holds a DataFrame, reads a label, or mutates its input.
 
-Every function is a pure function of those arrays. A descriptor that has no
+Every function is a pure function of those arrays. A property that has no
 value on a ledger — a share over an empty set — is NaN, and the caller records
 how many banks that touched; it is never imputed.
 
 The transform is one rule for all twelve: a value *v* enters a rule as
 log(1 + v). It is defined at zero and needs no reference population. How far it
 departs from the plain logarithm depends on the size of the value: over
-HI-Medium's roster the two differ by at most 2e-4 on `payment_count` and by
+HI-Medium's qualifying banks the two differ by at most 2e-4 on `payment_count` and by
 0.41 on `external_encounters`, whose smallest value is 2, so the transform is
 cosmetic for the large counts and substantive for the small one.
 """
@@ -89,7 +89,7 @@ class Ledger(NamedTuple):
 
 
 def transform(values: np.ndarray) -> np.ndarray:
-    """The transform: log(1 + v), one rule for every descriptor."""
+    """The transform: log(1 + v), one rule for every property."""
     return np.log1p(np.asarray(values, np.float64))
 
 
@@ -127,7 +127,7 @@ def _counts_over(values: np.ndarray) -> np.ndarray:
 
 
 def compute(ledger: Ledger) -> dict[str, float]:
-    """Every descriptor of one bank's training ledger."""
+    """Every label-free property of one bank's training ledger."""
     n = len(ledger.payer)
     internal = ledger.payer_is_own & ledger.payee_is_own
     crosses = ~internal

@@ -1,12 +1,21 @@
 #!/usr/bin/env python
-"""Experiment 2 — mechanism: the consortium cells and the examples dial.
+"""Experiment 2: Training examples or sight (Chapter 4).
 
-Part one runs the two consortium cells beside Experiment 1's solo and global cells:
-C-local (trained on the 107 roster banks' local copies, features from each
-bank's own ledger) and C-global (the same banks' training rows from the
-pooled global-sight table). Part two subsamples the laundering rows handed
-to the learner at the 20 largest roster banks (5/10/30/100/all, 5 nested
-draws); the "all" level adopts Experiment 1's solo Runs by config identity.
+Three scenarios join Experiment 1's ``solo`` (ledger, own) and ``global``
+(network, all) Runs on HI-Medium. Two learn from the training examples of
+HI-Medium's 107 qualifying banks, the qualifying pool: ``clocal`` is
+(ledger, qualifying), each bank's copies with features from its own ledger,
+and ``cglobal`` is (network, qualifying), the same banks' rows of the pooled
+network-sight table. ``nown`` is (network, own): Experiment 1's solo Run with
+the whole network in sight, the bank's own rows, labels, windows and
+configuration, with features from the pooled network-sight table (tree
+family) and messages over the whole payment graph (GNN family).
+``gnn_cglobaldup`` is (network, qualifying) for the GNN family with the count
+held equal: each training- and validation-window payment is fitted once per
+qualifying bank it touches, as in ``clocal``. The case reduction (``dial``)
+refits the bank's own detector at the 20 qualifying banks with the most
+confirmed cases, reduced to 5, 10, 30 or 100 in five nested draws; the full
+count adopts Experiment 1's solo Runs by config identity.
 
   uv run python scripts/exp2.py plan                # jobs still to run
   uv run python scripts/exp2.py run <unit> [...]    # execute units in-process
@@ -21,13 +30,7 @@ Unit specs: ``caches:<key>``, ``tree_clocal:<key>``, ``blind_clocal:<key>``,
 ``tree_nown:<key>:<bank>``, ``blind_nown:<key>:<bank>``,
 ``gnn_nown:<key>:<bank>:<seed>``.
 
-The own-pool network-sight cell is Experiment 1's solo Run with
-the whole network in view: the bank's own rows, labels, windows and
-configuration, features from the pooled global-sight table (trees) and
-messages over the whole payment graph (GNN).
-
-Execution settings are Experiment 1's, recorded in every Run config; M_SMOKE=1 pairs
-with M_EXPERIMENTS_DIR pointing away from the real Run log.
+Execution settings are Experiment 1's, recorded in every Run config.
 """
 from __future__ import annotations
 
@@ -69,9 +72,8 @@ from m.runlog import REPO_ROOT, config_hash, experiments_root  # noqa: E402
 from m.stats import average_precision, minority_f1  # noqa: E402
 
 EXPERIMENT = "exp2"
-SMOKE = exp1.SMOKE
 SEEDS = exp1.SEEDS
-KEY = os.environ.get("M_SMOKE_KEY", "sweden_100K_easy") if SMOKE else "HI-Medium"
+KEY = "HI-Medium"
 FIXED_EXP2 = exp1.FIXED_EXP1
 ROUNDS = exp1.ROUNDS
 GNN = exp1.GNN
@@ -83,9 +85,9 @@ DEVICE_NAME = exp1.DEVICE_NAME
 COLUMNS = {"tree": FEATURE_COLUMNS, "blind": OWN_FIELDS}
 ROW_RULE = "one row per (payment, roster endpoint bank), sorted by (payment, bank)"
 
-DIAL_LEVELS = [2, 5] if SMOKE else [5, 10, 30, 100]
-DIAL_DRAWS = 2 if SMOKE else 5
-DIAL_BANKS = 2 if SMOKE else 20
+DIAL_LEVELS = [5, 10, 30, 100]
+DIAL_DRAWS = 5
+DIAL_BANKS = 20
 DIAL_SALT = 20260823
 DIAL_GNN_SEED = 0
 
@@ -93,8 +95,6 @@ LOG_DIR = Path(os.environ.get("M_LOG_DIR", REPO_ROOT / "logs" / "exp2"))
 
 
 def cache_dir(key: str) -> Path:
-    if SMOKE:
-        return Path(os.environ["M_EXPERIMENTS_DIR"]) / "interim_exp2" / key
     return REPO_ROOT / "data" / "interim" / "exp2" / key
 
 
@@ -178,12 +178,11 @@ def parse_unit(spec: str) -> Unit:
 
 
 def dial_roster(key: str) -> pd.DataFrame:
-    """The dial's banks: the largest of the roster by training-window
-    laundering payments (77 to 265 on HI-Medium)."""
+    """The case reduction's banks: the qualifying banks with the most
+    confirmed cases (training-window laundering payments), 77 to 265."""
     table = exp1.roster_for(key).sort_values("train_pos", ascending=False)
     picked = table.head(DIAL_BANKS)
-    if not SMOKE and key == "HI-Medium":
-        assert int(picked["train_pos"].min()) == 77 and int(picked["train_pos"].max()) == 265
+    assert int(picked["train_pos"].min()) == 77 and int(picked["train_pos"].max()) == 265
     return picked
 
 
@@ -197,15 +196,11 @@ def dial_levels_for(train_pos: int) -> list[int]:
 
 def base_config(unit: Unit) -> dict:
     world, dataset = data.DATASETS[unit.key]
-    config = {"experiment": EXPERIMENT, "check": unit.check, "world": world,
-              "dataset": dataset, "dataset_key": unit.key,
-              "family": unit.family, "setup": unit.setup,
-              "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(unit.key)},
-              "features_version": FEATURES_VERSION}
-    if SMOKE:
-        config["smoke"] = {"banks": exp1.SMOKE_BANKS, "epochs": exp1.SMOKE_EPOCHS,
-                           "rounds": exp1.SMOKE_ROUNDS}
-    return config
+    return {"experiment": EXPERIMENT, "check": unit.check, "world": world,
+            "dataset": dataset, "dataset_key": unit.key,
+            "family": unit.family, "setup": unit.setup,
+            "roster": exp1.ROSTER_RULE | {"exclude": data.excluded_banks(unit.key)},
+            "features_version": FEATURES_VERSION}
 
 
 def consortium_fields(key: str) -> dict:
@@ -565,7 +560,7 @@ def gnn_cglobaldup_metrics(unit: Unit, run_dir: Path) -> dict:
 # ------------------------------------------------ own-pool network sight --
 
 def build_network_ledgers(key: str) -> None:
-    """Each roster bank's ledger rows with their pooled global-sight feature
+    """Each roster bank's ledger rows with their pooled network-sight feature
     values, row-aligned to the ledger (the rows C-global reads for the
     bank's payments); one ordered pass over the pooled table."""
     out = network_ledgers_dir(key)
@@ -785,8 +780,7 @@ def cmd_run(specs: list[str]) -> int:
     done = completed(EXPERIMENT)
     cache = exp1.LedgerCache()
     roster = exp1.roster_for(KEY)
-    print(f"run {len(specs)} units (root {experiments_root()}, smoke {SMOKE})",
-          flush=True)
+    print(f"run {len(specs)} units (root {experiments_root()})", flush=True)
     failures = 0
     for spec in specs:
         unit = parse_unit(spec)
@@ -835,10 +829,10 @@ def dial_units(key: str, family: str) -> list[Unit]:
 
 
 def plan_jobs(done: dict, exclude: frozenset[str] = frozenset()) -> list[Job]:
-    """Launch order: GNN C-global (longest), GNN C-local, the tree
-    cells, the blind tree, then the examples dial; the own-pool
-    network-sight cell last, its tree and blind
-    units in lots of banks, its GNN units in lots of banks with the
+    """Launch order: GNN C-global (longest), GNN C-local, the
+    copy-weighted GNN C-global, the tree cells, the blind tree, then the
+    case reduction; the own-pool network-sight cell last, its tree and
+    blind units in lots of banks, its GNN units in lots of banks with the
     three seeds together."""
     key = KEY
     roster = exp1.roster_for(key)
@@ -848,16 +842,12 @@ def plan_jobs(done: dict, exclude: frozenset[str] = frozenset()) -> list[Job]:
     if not caches_ready(key):
         jobs.append(Job(f"caches:{key}", (f"caches:{key}",), 1, MEM["caches"]))
     caches_dep = (f"caches:{key}",)
-    for seed in SEEDS:
-        u = Unit("gnn_cglobal", key, seed=seed)
-        if todo(u):
-            jobs.append(Job(u.spec, (u.spec,), GNN_THREADS, MEM["gnn_cglobal"],
-                            caches_dep))
-    for seed in SEEDS:
-        u = Unit("gnn_clocal", key, seed=seed)
-        if todo(u):
-            jobs.append(Job(u.spec, (u.spec,), GNN_THREADS, MEM["gnn_clocal"],
-                            caches_dep))
+    for check in ("gnn_cglobal", "gnn_clocal", "gnn_cglobaldup"):
+        for seed in SEEDS:
+            u = Unit(check, key, seed=seed)
+            if todo(u):
+                jobs.append(Job(u.spec, (u.spec,), GNN_THREADS, MEM[check],
+                                caches_dep))
     for check in ("tree_clocal", "tree_cglobal", "blind_clocal", "blind_cglobal"):
         u = Unit(check, key)
         if todo(u):
@@ -947,7 +937,7 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
     exp1.install_signal_handlers(on_signal)
     signal.signal(signal.SIGINT, on_signal)
     print(f"launch: budget {budget} threads, machine {machine_gb} GB, root "
-          f"{experiments_root()}, smoke {SMOKE}; logs in {LOG_DIR}", flush=True)
+          f"{experiments_root()}; logs in {LOG_DIR}", flush=True)
     idle_polls = 0
     try:
         while True:

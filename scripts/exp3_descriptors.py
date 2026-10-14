@@ -1,24 +1,26 @@
 #!/usr/bin/env python
-"""The descriptor selection for Experiment 3.
+"""Experiment 3: Rules on the ledger (Chapter 5). The label-free properties
+and the sixteen rules on them.
 
-The selection computes the ledger descriptors for every bank of the
-four datasets Experiment 3 reads, then selects one rule per target family from sixteen
-candidates under a freeze rule fixed in advance. Nothing trains; every number is
-a function of the cached ledgers and of Experiment 1's recorded shortfalls.
+Computes the twelve label-free properties of every qualifying bank of HI-Medium
+and HI-Small, then scores the sixteen rules on HI-Medium's 107 qualifying banks
+for each family: each rule's out-of-fold rho, and its paired bank-bootstrap
+difference from the scale rule. Nothing trains; every number is a function of
+the cached ledgers and of Experiment 1's recorded shortfalls.
 
-A gate precedes every reading. It recomputes ten banks' descriptors by a
+A check precedes every reading. It recomputes ten banks' properties by a
 deliberately naive second implementation — pandas group-bys over account
 labels, selecting its own rows — and requires agreement to 1e-12. It then
 **deletes**, in turn, the rows outside the training window and the same-account
-rows, and requires every descriptor to be bit-identical after each; and it
+rows, and requires every property to be bit-identical after each; and it
 rewrites every label first to 0 and then to 1, requiring the same. Deletion
-rather than permutation, because every descriptor is a symmetric function of
+rather than permutation, because every property is a symmetric function of
 the rows it counts: shuffling a block of rows among themselves preserves the
-multiset and could not move a descriptor that reads them, so a permutation
-check would pass whatever the descriptors did.
+multiset and could not move a property that reads them, so a permutation
+check would pass whatever the properties did.
 
-  uv run python scripts/exp3_descriptors.py                 # gate, descriptors, selection
-  uv run python scripts/exp3_descriptors.py HI-Medium       # one dataset's descriptors
+  uv run python scripts/exp3_descriptors.py                 # check, properties, rules
+  uv run python scripts/exp3_descriptors.py HI-Medium       # one dataset's properties
 
 LightGBM is never imported; torch enters only through the per-Run fingerprint.
 """
@@ -110,7 +112,7 @@ def cmd_descriptors(key: str, done: dict) -> dict:
                   lambda config, run_dir: descriptor_metrics(key, run_dir), done=done)
     constant = metrics["constant_descriptors"]
     print(f"{CHECK} {key}: k {metrics['k']}, "
-          f"{metrics['banks_with_any_undefined']} banks with an undefined descriptor, "
+          f"{metrics['banks_with_any_undefined']} banks with an undefined property, "
           f"constant here: {constant or 'none'}", flush=True)
     return metrics
 
@@ -188,9 +190,9 @@ def naive_descriptors(ledger: pd.DataFrame, bank: str) -> dict[str, float]:
 
 def _without(ledger: pd.DataFrame, drop: np.ndarray) -> pd.DataFrame:
     """The ledger with the selected rows physically removed. Deletion, not
-    permutation: every descriptor is a symmetric function of the rows it
-    counts, so permuting a block of rows among themselves preserves the
-    multiset and cannot move a descriptor that reads them. Only removing them
+    permutation: every label-free property is a symmetric function of the rows
+    it counts, so permuting a block of rows among themselves preserves the
+    multiset and cannot move a property that reads them. Only removing them
     can."""
     return ledger.loc[~drop].reset_index(drop=True)
 
@@ -215,14 +217,14 @@ def gate_config() -> dict:
                 "independent_recomputation": "a second, naive implementation, which "
                                              "selects its own rows and keys its own "
                                              "accounts by label, reproduces every "
-                                             "descriptor",
+                                             "label-free property",
                 "window_restriction": "deleting the rows outside the training window "
-                                      "leaves every descriptor bit-identical",
-                "housekeeping": "deleting the same-account rows leaves every descriptor "
+                                      "leaves every property bit-identical",
+                "housekeeping": "deleting the same-account rows leaves every property "
                                 "bit-identical",
                 "label_freeness": "setting every label to 0, and again to 1, leaves "
-                                  "every descriptor bit-identical"},
-            "why_deletion": "a descriptor is a symmetric function of the rows it "
+                                  "every property bit-identical"},
+            "why_deletion": "a property is a symmetric function of the rows it "
                             "counts, so permuting a block of rows among themselves "
                             "cannot move it; the check has to remove them",
             "seed": SEED, "descriptors_version": desc.VERSION}
@@ -287,25 +289,22 @@ def selection_config(family: str) -> dict:
             "candidates": {candidate.name: list(candidate.descriptors)
                            for candidate in CANDIDATES},
             "model": "linear on log(1 + v); weighted least squares at 1/s_B^2, "
-                     "the unweighted fit beside it as a sensitivity reading",
+                     "the unweighted fit beside it",
             "folds": {"n_folds": rule.N_FOLDS, "repeats": rule.REPEATS,
                       "assignment": "the roster's canonical order permuted at the "
                                     "repeat index, cut into contiguous blocks"},
             "metric": "mean over repeats of the out-of-fold Spearman correlation",
-            "freeze_rule": ["highest mean out-of-fold correlation",
-                            "a candidate ties with the leader when it trails it by no "
-                            "more than the paired bank-bootstrap standard deviation of "
-                            "the difference between the two",
-                            "the baseline is always in the tie set, and a richer rule "
-                            "displaces it only by beating it outright: the paired "
-                            "bootstrap's 5th percentile of the difference from the "
-                            "baseline above zero",
-                            "fewest descriptors wins the tie",
-                            "candidate order breaks a remaining tie, the baseline first"],
-            "freeze_rule_displaced": {
-                "marginal": "one marginal bootstrap standard deviation of the "
-                              "leader's own correlation",
-                "unguarded": "the paired band without the baseline guard"},
+            "outperforms": "a rule outperforms the scale rule when the 5th "
+                           "percentile of the paired bank-bootstrap difference "
+                           "between the two exceeds zero",
+            "choice_rule": ["the scale rule is chosen when no other rule outperforms it",
+                            "otherwise the rules that outperform it are ranked by "
+                            "mean out-of-fold correlation, and one ties with the best "
+                            "of them when it trails that best by no more than the "
+                            "paired bank-bootstrap standard deviation of its own "
+                            "difference from the best-scoring of all the rules",
+                            "fewest properties wins the tie",
+                            "candidate order breaks a remaining tie"],
             "estimand": "the mean over repeats of the out-of-fold rank correlation; "
                         "every score, wobble and difference is that same quantity",
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
@@ -315,10 +314,10 @@ def selection_config(family: str) -> dict:
 
 
 def evaluate(design_all: pd.DataFrame, target: np.ndarray, weights: np.ndarray) -> dict:
-    """Every candidate's out-of-fold predictions and the readings the freeze
+    """Every candidate's out-of-fold predictions and the readings the choice
     rule needs, all of them the *same* estimand: the mean over repeats of the
-    out-of-fold rank correlation, and the bank-bootstrap wobble of that mean —
-    never of some other statistic standing in for it."""
+    out-of-fold rank correlation, and the bank-bootstrap standard deviation of
+    that mean — never of some other statistic standing in for it."""
     out = {}
     for candidate in CANDIDATES:
         columns = [f"log1p_{name}" for name in candidate.descriptors]
@@ -357,14 +356,11 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
 
     score = {name: weighted[name]["score"] for name in CANDIDATE_ORDER}
     paired = {name: weighted[name]["paired_leader"]["sd"] for name in CANDIDATE_ORDER}
-    marginal = {name: weighted[name]["bootstrap"]["sd"] for name in CANDIDATE_ORDER}
     beats = {name: bool(weighted[name]["paired_baseline"]["q05"] > 0)
              for name in CANDIDATE_ORDER}
     size = {candidate.name: len(candidate.descriptors) for candidate in CANDIDATES}
-    frozen = rule.freeze(CANDIDATE_ORDER, score, paired, size, desc.BASELINE, beats)
-    unguarded = rule.freeze_unguarded(CANDIDATE_ORDER, score, paired, size)
-    marginal_band = rule.freeze_marginal(CANDIDATE_ORDER, score, marginal, size)
-    frozen_unweighted = rule.freeze(
+    chosen = rule.choose(CANDIDATE_ORDER, score, paired, size, desc.BASELINE, beats)
+    chosen_unweighted = rule.choose(
         CANDIDATE_ORDER, {n: unweighted[n]["score"] for n in CANDIDATE_ORDER},
         {n: unweighted[n]["paired_leader"]["sd"] for n in CANDIDATE_ORDER}, size,
         desc.BASELINE,
@@ -392,10 +388,8 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
             "paired_q05_vs_baseline": entry["paired_baseline"]["q05"],
             "score_unweighted": unweighted[candidate.name]["score"],
             "beats_baseline": beats[candidate.name],
-            "tied": candidate.name in frozen["tied"],
-            "tied_unguarded": candidate.name in unguarded["tied"],
-            "tied_marginal": candidate.name in marginal_band["tied"],
-            "winner": candidate.name == frozen["winner"]})
+            "tied": candidate.name in chosen["tied"],
+            "winner": candidate.name == chosen["winner"]})
         coefficient_rows.append({
             "candidate": candidate.name, "term": "intercept", "value": intercept,
             "dropped": False})
@@ -415,17 +409,13 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
             "candidates": len(CANDIDATES),
             "baseline": desc.BASELINE,
             "baseline_score": score[desc.BASELINE],
-            "winner_score": score[frozen["winner"]],
+            "winner_score": score[chosen["winner"]],
             "score": score,
-            "freeze": frozen,
-            "freeze_unguarded": unguarded,
-            "freeze_marginal": marginal_band,
-            "agrees_with_unguarded": bool(frozen["winner"] == unguarded["winner"]),
-            "freeze_unweighted": frozen_unweighted,
-            "agrees_with_marginal": bool(frozen["winner"] == marginal_band["winner"]),
+            "choice": chosen,
+            "choice_unweighted": chosen_unweighted,
             "winner_descriptors": list(
-                {c.name: c.descriptors for c in CANDIDATES}[frozen["winner"]]),
-            "agrees_with_unweighted": bool(frozen["winner"] == frozen_unweighted["winner"]),
+                {c.name: c.descriptors for c in CANDIDATES}[chosen["winner"]]),
+            "agrees_with_unweighted": bool(chosen["winner"] == chosen_unweighted["winner"]),
             "seconds": time.time() - t0,
             "candidate_order": CANDIDATE_ORDER,
             "artifacts": {"candidates": write_csv(run_dir, "candidates", candidates_table),
@@ -440,23 +430,26 @@ def cmd_selection(family: str, done: dict) -> dict:
     metrics = run(EXPERIMENT, selection_config(family),
                   lambda config, run_dir: selection_metrics(family, run_dir, done),
                   done=done)
-    frozen = metrics["freeze"]
-    print(f"{SELECTION} {family}: winner {frozen['winner']} at rho "
-          f"{metrics['winner_score']:+.4f} against the baseline's "
-          f"{metrics['baseline_score']:+.4f}; decided by {frozen['decided_by']}, "
-          f"{len(frozen['tied'])} candidates tied", flush=True)
+    chosen = metrics["choice"]
+    print(f"{SELECTION} {family}: the scale rule at rho "
+          f"{metrics['baseline_score']:+.4f}; outperformed by "
+          f"{chosen['beaters'] or 'no other rule'}; chosen {chosen['winner']} "
+          f"({chosen['decided_by']})", flush=True)
     return metrics
 
 
 def main() -> int:
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        print(__doc__)
+        return 0
     keys = sys.argv[1:] or list(dd.KEYS)
     unknown = [key for key in keys if key not in dd.data.DATASETS]
     if unknown:
         raise SystemExit(f"unknown dataset keys: {unknown}")
     done = completed(EXPERIMENT)
     if not cmd_gate(done):
-        raise SystemExit("the descriptor gate failed; no descriptor reading is "
-                         "believed until the difference is localised")
+        raise SystemExit("the check on the label-free properties failed; localise "
+                         "the difference before reading any property")
     for key in keys:
         cmd_descriptors(key, done)
     if set(keys) >= {dd.FIT_KEY}:

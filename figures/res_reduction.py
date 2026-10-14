@@ -4,13 +4,13 @@ Data: Experiment 2, the `dial` check on HI-Medium for the tree and GNN
 families (metrics.json, per bank). At 5, 10, 30 and 100 confirmed cases a
 bank's score is the mean over the five nested draws of its test average
 precision; for the tree family each draw's value is the median over the
-eight settings. At the bank's full count the score is the one the dial Run
-adopts from Experiment 1's own-ledger Runs: the median over the eight
-settings (tree) or seed 0 (GNN, the seed the reduced fits use). A level at
-or above a bank's full count is not fitted, so a curve ends at the bank's own
-count. Bank 020, the bank with the most confirmed cases, carries its range at
-the full count: the range over the eight settings (tree) or the three seeds
-(GNN).
+eight configurations. At the bank's full count the score is the one the dial
+Run adopts from Experiment 1's solo Runs: the median over the eight
+configurations (tree) or seed 0 (GNN, the seed the reduced fits use). A level
+at or above a bank's full count is not fitted, so a curve ends at the bank's
+own count. Bank 020, the bank with the most confirmed cases, carries its range
+at the full count: the range over the eight configurations (tree) or the three
+seeds (GNN).
 """
 import json
 from pathlib import Path

@@ -1,15 +1,22 @@
 #!/usr/bin/env python
-"""The GNN selection — the GNN configuration search.
+"""The GNN selection: the search for the GNN family's configuration
+(Appendix B).
 
-Six candidates on HI-Small in the global set-up, one Run per (candidate,
-seed). Stages, each a pure function over the Run log:
+Six candidates on HI-Small at (network, all), one Run per (candidate, seed).
+Stages, each a pure function over the Run log:
 
-  gate    candidate 1 at seeds 0-2 — the code-path equivalence gate against
-          the anchor check's recorded HI-Small anchor; nothing else runs until it passes
-  screen  candidates 2-6 at seed 0, ranked by best validation AP
-  commit  the two highest screen APs at seeds 1-2 (seed 0 adopted)
-  verdict the winner (3-seed mean validation AP; ties to fewer parameters),
-          the anchor-role reading, and the frozen configuration
+  gate    candidate 1 at seeds 0-2, whose mean test average precision and
+          mean F1 must each fall within the range of the anchor's three seeds
+          (checks_anchor_gnn.py) widened by one standard deviation at each
+          end; nothing else runs until it passes
+  screen  candidates 2-6 at seed 0; all six seed-0 Runs ranked by their best
+          validation average precision
+  commit  the two candidates highest at the screen, fitted at seeds 1-2 (their
+          seed-0 Runs reused)
+  verdict the candidate kept: the higher three-seed mean validation average
+          precision, unless the two means differ by no more than their pooled
+          seed standard deviation, when the candidate with fewer parameters is
+          kept, then the lower candidate number
 
 Usage:
   uv run python scripts/select_gnn.py plan <gate|screen|commit>
@@ -19,9 +26,7 @@ Usage:
 
 Execution settings come from the environment and are recorded in every Run
 config: M_TORCH_THREADS (default 4), M_GNN_WORKERS (default 0), M_DEVICE
-(default cpu). M_SMOKE=1 subsamples the world and shortens training for a
-smoke test; it must be paired with M_EXPERIMENTS_DIR pointing away from the
-real Run log.
+(default cpu); the script refuses other values.
 """
 from __future__ import annotations
 
@@ -35,8 +40,6 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ.setdefault("M_DEVICE", "cpu")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from extract import frame  # noqa: E402
@@ -48,25 +51,21 @@ from m.features import usd_rate_table  # noqa: E402
 from m.gnn import GNNConfig, edge_inputs, payment_graph, train_edge_scorer  # noqa: E402
 from m.runlog import REPO_ROOT, config_hash, experiments_root, find, index  # noqa: E402
 from m.stats import average_precision, minority_f1  # noqa: E402
-from m.worlds.amlworld import GNN_AGGREGATES  # noqa: E402
 
 EXPERIMENT = "select_gnn"
 DATASET = "HI-Small"
 SEEDS = [0, 1, 2]
-SMOKE = os.environ.get("M_SMOKE") == "1"
-SMOKE_FRAC = float(os.environ.get("M_SMOKE_FRAC", "0.03"))
-if SMOKE and experiments_root().resolve() == (REPO_ROOT / "experiments").resolve():
-    raise SystemExit("M_SMOKE=1 requires M_EXPERIMENTS_DIR pointing away from the "
-                     "real Run log")
 THREADS = int(os.environ.get("M_TORCH_THREADS", "4"))
 WORKERS = int(os.environ.get("M_GNN_WORKERS", "0"))
 EXECUTION = {"device": "cpu", "torch_threads": 4, "loader_workers": 0}
 RELATIVE_COST = {1: 1.0, 2: 1.3, 3: 0.75, 4: 1.6, 5: 1.0, 6: 1.0}
-ANCHOR_FLOOR = min(GNN_AGGREGATES[DATASET].values()) - 10.0
-ANCHOR_CEILING = max(GNN_AGGREGATES[DATASET].values()) + 10.0
 MEMORY_GUARD_GB = 8.0
+TIE_RULE = ("best validation average precision at early stopping; the two "
+            "finalists ranked by their three-seed means, which tie when they "
+            "differ by no more than the pooled seed standard deviation; a tie "
+            "goes to fewer parameters, then the lower candidate number")
 
-BASE = dict(embed_dim=8, batch_size=4096, max_epochs=2 if SMOKE else 15,
+BASE = dict(embed_dim=8, batch_size=4096, max_epochs=15,
             patience=3, loader_workers=WORKERS)
 CANDIDATES: dict[int, GNNConfig] = {
     1: GNNConfig(hidden=64, fanout=(15, 15), lr=2e-3, pos_weight=6.0, **BASE),
@@ -79,39 +78,27 @@ CANDIDATES: dict[int, GNNConfig] = {
 
 
 def unit_config(candidate: int, seed: int) -> dict:
-    config = {"experiment": EXPERIMENT, "check": "candidate_seed",
-              "candidate": candidate, "world": "amlworld", "dataset": DATASET,
-              "dataset_key": DATASET, "setup": "global", "head": "edge",
-              "model": "graphsage_2layer_edgeattr",
-              "gnn": CANDIDATES[candidate].as_dict(), "seed": seed,
-              "features_version": FEATURES_VERSION, "gnn_version": GNN_VERSION,
-              "device": os.environ.get("M_DEVICE", "cpu"),
-              "torch_threads": THREADS}
-    if SMOKE:
-        config["smoke"] = {"frac": SMOKE_FRAC}
-    return config
+    return {"experiment": EXPERIMENT, "check": "candidate_seed",
+            "candidate": candidate, "world": "amlworld", "dataset": DATASET,
+            "dataset_key": DATASET, "setup": "global", "head": "edge",
+            "model": "graphsage_2layer_edgeattr",
+            "gnn": CANDIDATES[candidate].as_dict(), "seed": seed,
+            "features_version": FEATURES_VERSION, "gnn_version": GNN_VERSION,
+            "device": os.environ.get("M_DEVICE", "cpu"),
+            "torch_threads": THREADS}
 
 
 def verdict_config() -> dict:
-    config = {"experiment": EXPERIMENT, "check": "verdict",
-              "world": "amlworld", "dataset": DATASET, "dataset_key": DATASET,
-              "setup": "global", "head": "edge",
-              "model": "graphsage_2layer_edgeattr",
-              "candidates": {str(k): v.as_dict() for k, v in CANDIDATES.items()},
-              "seeds": SEEDS, "screen_seed": 0, "finalists": 2,
-              "ranking": "best validation AP at early stop; commit winner by "
-                         "3-seed mean; means within one pooled seed SD tie; "
-                         "ties break towards fewer "
-                         "parameters, then the lower candidate number",
-              "anchor_role": {"dataset": DATASET, "metric": "test_f1_x100 mean "
-                              "over seeds", "floor": ANCHOR_FLOOR,
-                              "rule": "escalate only below the floor"},
-              "features_version": FEATURES_VERSION, "gnn_version": GNN_VERSION,
-              "device": os.environ.get("M_DEVICE", "cpu"),
-              "torch_threads": THREADS}
-    if SMOKE:
-        config["smoke"] = {"frac": SMOKE_FRAC}
-    return config
+    return {"experiment": EXPERIMENT, "check": "verdict",
+            "world": "amlworld", "dataset": DATASET, "dataset_key": DATASET,
+            "setup": "global", "head": "edge",
+            "model": "graphsage_2layer_edgeattr",
+            "candidates": {str(k): v.as_dict() for k, v in CANDIDATES.items()},
+            "seeds": SEEDS, "screen_seed": 0, "finalists": 2,
+            "ranking": TIE_RULE,
+            "features_version": FEATURES_VERSION, "gnn_version": GNN_VERSION,
+            "device": os.environ.get("M_DEVICE", "cpu"),
+            "torch_threads": THREADS}
 
 
 def parse_unit(text: str) -> tuple[int, int]:
@@ -134,22 +121,9 @@ def recorded(done: dict, candidate: int, seed: int) -> dict | None:
     return json.loads((path / "metrics.json").read_text())
 
 
-def smoke_subsample(arrays, frac: float = SMOKE_FRAC):
-    ts, payer, payee, numeric, codes, y, rows, n_nodes = arrays
-    rng = np.random.default_rng(0)
-    keep = np.sort(rng.choice(len(ts), int(len(ts) * frac), replace=False))
-    position = np.full(len(ts), -1, np.int64)
-    position[keep] = np.arange(len(keep))
-    rows = {k: position[v][position[v] >= 0] for k, v in rows.items()}
-    return (ts[keep], payer[keep], payee[keep], numeric[keep], codes[keep],
-            y[keep], rows, n_nodes)
-
-
 def build_inputs() -> dict:
     df = frame(DATASET)
     arrays = edge_inputs(df, usd_rate_table(df))
-    if SMOKE:
-        arrays = smoke_subsample(arrays)
     ts, payer, payee, numeric, codes, y, rows, n_nodes = arrays
     return {"arrays": arrays,
             "data": payment_graph(ts, payer, payee, n_nodes)}
@@ -226,8 +200,9 @@ def finalists(done: dict) -> list[int]:
 
 
 def gate_reading(done: dict) -> dict:
-    """Candidate 1's three seeds under the new code path against the anchor check's
-    recorded HI-Small anchor Run."""
+    """Candidate 1's three seeds against the anchor's: each mean must fall
+    within the range of the anchor's seeds widened by one standard deviation
+    at each end."""
     ref_dir = find(index("checks"), check="anchor_gnn", dataset_key=DATASET)
     ref = json.loads((ref_dir / "metrics.json").read_text())
     ref_ap = np.array([s["test_ap"] for s in ref["seeds"]])
@@ -286,34 +261,18 @@ def make_verdict_fn():
         tie_break = ("none" if not tied_ap else
                      "fewer parameters" if not tied_parameters else
                      "lower candidate number")
-        tie_rule = {"rule": "3-seed means within one pooled seed SD tie; "
-                            "ties break towards fewer "
-                            "parameters, then the lower candidate number",
+        tie_rule = {"rule": TIE_RULE,
                     "seed_sd": {str(c): v for c, v in seed_sd.items()},
                     "pooled_seed_sd": pooled_sd, "difference": difference,
-                    "tied": bool(tied_ap),
-                    "winner_under_original_four_decimal_rule":
-                        sorted(top, key=lambda c: (-round(commit[c]["val_ap_mean"], 4),
-                                                   commit[c]["n_parameters"], c))[0]}
-        f1_winner = commit[winner]["test_f1_x100_mean"]
-        anchor = {"dataset": DATASET, "published": GNN_AGGREGATES[DATASET],
-                  "floor": ANCHOR_FLOOR, "band_ceiling": ANCHOR_CEILING,
-                  "test_f1_x100_mean": f1_winner,
-                  "below_floor": bool(f1_winner < ANCHOR_FLOOR),
-                  "above_band": bool(f1_winner > ANCHOR_CEILING),
-                  "escalation_authorised": bool(f1_winner < ANCHOR_FLOOR),
-                  "source": "Altman 2024, Table 2 (the lowest "
-                            "published HI-Small GNN aggregate minus 10 points "
-                            "is the floor; the highest plus 10 the band ceiling)"}
+                    "tied": bool(tied_ap)}
         gate = gate_reading(done)
         if not gate["complete"]:
             raise SystemExit("gate incomplete: candidate 1 lacks a seed Run")
         return {"dataset_key": DATASET, "screen": {str(c): v for c, v in table.items()},
                 "finalists": top, "commit": {str(c): v for c, v in commit.items()},
                 "winner": winner, "tie_break": tie_break, "tie_rule": tie_rule,
-                "frozen_configuration": CANDIDATES[winner].as_dict(),
-                "anchor_role": anchor, "codepath_gate": gate,
-                "frozen": bool(gate.get("pass", False)) and not anchor["below_floor"],
+                "configuration": CANDIDATES[winner].as_dict(),
+                "codepath_gate": gate,
                 "execution": {"device": os.environ.get("M_DEVICE", "cpu"),
                               "torch_threads": THREADS, "loader_workers": WORKERS}}
     return fn
@@ -324,8 +283,6 @@ def _exit_on_signal(signum, _frame):
 
 
 def gate_required(done: dict, what: str) -> None:
-    if SMOKE:
-        return
     if not gate_reading(done).get("pass", False):
         raise SystemExit(f"{what} refused: the code-path equivalence gate has not "
                          f"passed; run `select_gnn.py launch gate` then `select_gnn.py gate`")
@@ -344,8 +301,8 @@ def cmd_run(units: list[str]) -> int:
         print("nothing to run: every unit is complete", flush=True)
         return 0
     print(f"building {DATASET} inputs for units {[unit_name(*u) for u in todo]}"
-          f" (root {experiments_root()}, threads {THREADS}, workers {WORKERS}, "
-          f"smoke {SMOKE})", flush=True)
+          f" (root {experiments_root()}, threads {THREADS}, workers {WORKERS})",
+          flush=True)
     inputs = build_inputs()
     for candidate, seed in todo:
         if candidate != 1:
@@ -389,7 +346,7 @@ def cmd_launch(stage: str, shards: int) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"{stage}: {len(units)} units in {len(lots)} shards -> {experiments_root()} "
           f"(device {os.environ.get('M_DEVICE', 'cpu')}, threads {THREADS}, "
-          f"workers {WORKERS}, smoke {SMOKE}); logs in {log_dir}", flush=True)
+          f"workers {WORKERS}); logs in {log_dir}", flush=True)
     procs: list[tuple[int, subprocess.Popen, object]] = []
 
     def stop_children(signum, _frame):
@@ -464,7 +421,7 @@ def cmd_status() -> int:
 def check_execution_settings() -> None:
     actual = {"device": os.environ.get("M_DEVICE", "cpu"), "torch_threads": THREADS,
               "loader_workers": WORKERS}
-    if not SMOKE and actual != EXECUTION:
+    if actual != EXECUTION:
         raise SystemExit(f"execution settings {actual} differ from the fixed "
                          f"{EXECUTION}; set M_DEVICE, M_TORCH_THREADS and "
                          f"M_GNN_WORKERS accordingly")
@@ -503,9 +460,8 @@ def main() -> int:
     if cmd == "verdict":
         verdict_ready(done_index())
         metrics = run(EXPERIMENT, verdict_config(), make_verdict_fn())
-        print(json.dumps({k: metrics[k] for k in ("winner", "finalists", "frozen",
-                                                  "tie_break")}, indent=2))
-        print("anchor role:", json.dumps(metrics["anchor_role"], indent=2))
+        print(json.dumps({k: metrics[k] for k in ("winner", "finalists", "tie_break",
+                                                  "configuration")}, indent=2))
         return 0
     if cmd == "status":
         return cmd_status()

@@ -1,21 +1,20 @@
 #!/usr/bin/env python
-"""Experiment 3 — predicting the shortfall from the bank's own ledger.
+"""Experiment 3: Rules on the ledger (Chapter 5).
 
-Five steps, in a fixed order. **Screen** correlates every
-descriptor with every target on HI-Medium's 107 banks, under one
-false-discovery family and two partials. **Rank** asks whether the rule the descriptor selection
-froze beats the scale-only baseline out of fold. **Held-out** applies the frozen
-coefficients to HI-Small's eleven banks, which nothing in the fit ever saw.
-**Ceiling** prices what label-freeness costs by
-running the identical machinery over label-using quantities. **Bank facing**
-freezes the rule a bank may
-compute once its own labels are admitted: scale plus the bank's own training-window
-laundering-payment count, one weighted least-squares fit on the ceiling Run's
-107 rows, held-out transfer to HI-Small's eleven banks beside the label-free
-rule's.
+Five stages, in order. **Inputs** checks every shortfall table read here
+against its recorded digest and its bootstrap replicates. **Screen** gives
+each label-free property's rank correlation with the shortfall on HI-Medium's
+107 qualifying banks, and its partial rank correlation with both properties of
+scale held fixed. **Holdout** fits the scale rule on those 107 banks and
+applies it unchanged to HI-Small's eleven. **Ceiling** computes the six
+quantities computed from labels and scores the rules that use labels out of
+fold, exactly as the selection scores the rules on label-free properties.
+**Bank facing** fits the rule on scale and confirmed cases on the 107 banks
+and applies it unchanged to HI-Small's eleven.
 
-No model trains. Every number is a function of the descriptor selection's descriptor Runs
-and Experiment 1's recorded shortfalls, each cited by config hash and verified by digest.
+No model trains. Every number is a function of the cached AMLworld tables, the
+Runs of `exp3_descriptors.py` and Experiment 1's recorded shortfalls, each Run
+cited by config hash and verified by digest.
 
   uv run python scripts/exp3.py              # every stage, in order
   uv run python scripts/exp3.py screen       # one stage
@@ -24,6 +23,7 @@ LightGBM is never imported; torch enters only through the per-Run fingerprint.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -41,19 +41,12 @@ from m import completed, config_hash, run, track  # noqa: E402
 from m import ceiling as lab  # noqa: E402
 from m import descriptors as desc  # noqa: E402
 from m import rank, rule  # noqa: E402
-from m.artifacts import verify, write_csv  # noqa: E402
+from m.artifacts import sha256_of, verify, write_csv  # noqa: E402
 from m.worlds import amlworld  # noqa: E402
 
 EXPERIMENT = "exp3"
 SEED = 0
-PERMUTATIONS = 10_000
 BOOTSTRAP_DRAWS = 1000
-FDR_Q = 0.10
-PARTIAL_LEVEL = 0.10
-ONE_SIDED_LEVEL = 0.05
-CALIBRATION_REPLICATES = 500
-CALIBRATION_PERMUTATIONS = 999
-BLOCK_WIDTH = 5
 
 SCALE = desc.GROUPS[desc.BASELINE]
 
@@ -62,8 +55,8 @@ CEILING_CANDIDATES = rule.candidates(CEILING_GROUPS, desc.BASELINE)
 CEILING_ORDER = [candidate.name for candidate in CEILING_CANDIDATES]
 
 BANK_FACING = ("payment_count", "active_accounts", "laundering_count")
-# The fitting roster's training-window payment counts, the range the frozen
-# ordering is valid within; asserted where the fit is made.
+# HI-Medium's range of training-window payments per bank (Appendix D); the
+# assertion catches a fit on other rows than the ceiling Run's.
 FITTED_RANGE = (5198.0, 125014.0)
 
 
@@ -71,20 +64,16 @@ def _selection_run(family: str, done: dict) -> Path:
     return done[config_hash(exp3_descriptors.selection_config(family))]
 
 
-def _frozen(family: str, done: dict) -> tuple[str, tuple[str, ...]]:
-    import json
-    metrics = json.loads((_selection_run(family, done) / "metrics.json").read_text())
-    return metrics["freeze"]["winner"], tuple(metrics["winner_descriptors"])
-
-
-def _digest(path: Path) -> str:
-    from m.artifacts import sha256_of
-
-    return sha256_of(path)
-
-
 def _design(table: pd.DataFrame, descriptors: tuple[str, ...]) -> np.ndarray:
     return table[[f"log1p_{name}" for name in descriptors]].to_numpy(np.float64)
+
+
+def _coefficients(descriptors: tuple[str, ...], intercept: float,
+                  coefficients: np.ndarray) -> pd.DataFrame:
+    rows = [{"term": "intercept", "value": intercept}] + [
+        {"term": f"log1p_{name}", "value": float(value)}
+        for name, value in zip(descriptors, coefficients)]
+    return pd.DataFrame(rows).set_index("term")
 
 
 def _inputs(families: tuple[str, ...], keys: tuple[str, ...], done: dict) -> dict:
@@ -93,7 +82,6 @@ def _inputs(families: tuple[str, ...], keys: tuple[str, ...], done: dict) -> dic
            "shortfall": {f"{key}/{family}": dd.shortfall_hash(key, family)
                          for key in keys for family in families}}
     for family in families:
-        import json
         path = _selection_run(family, done)
         out.setdefault("selection", {})[family] = json.loads(
             (path / "status.json").read_text())["config_hash"]
@@ -106,16 +94,14 @@ def inputs_config(done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "inputs_gate",
             "rule": "every target table Experiment 3 reads is verified against its recorded "
                     "digest, stands in its roster's order, and is reproduced by its own "
-                    "persisted bootstrap replicates; every descriptor table covers "
-                    "exactly the same banks",
+                    "persisted bootstrap replicates; every table of label-free properties "
+                    "covers exactly the same banks",
             "tolerance": {"bootstrap_standard_error": 1e-6},
             "cells": [f"{key}/{family}" for key in dd.KEYS for family in dd.FAMILIES],
             "inputs": _inputs(dd.FAMILIES, dd.KEYS, done)}
 
 
 def inputs_metrics(run_dir: Path, done: dict) -> dict:
-    import json
-
     rows = []
     for key in dd.KEYS:
         values = exp3_descriptors.descriptor_table(key, done)
@@ -158,347 +144,84 @@ def inputs_metrics(run_dir: Path, done: dict) -> dict:
 
 def screen_config(done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "screen", "dataset_key": dd.FIT_KEY,
-            "targets": {family: "the per-bank shortfall Experiment 1 measured"
-                        for family in dd.FAMILIES},
-            "primary_targets": list(dd.PRIMARY_FAMILIES),
+            "families": list(dd.FAMILIES),
             "descriptors": list(desc.NAMES),
-            "family_size": len(desc.NAMES) * len(dd.FAMILIES),
-            "fdr": {"procedure": "Benjamini-Hochberg step-up", "q": FDR_Q},
-            "raw_p": {"null": "bank permutation", "permutations": PERMUTATIONS,
-                      "seed": SEED, "alternative": "two-sided"},
-            "partials": {"base_rate": ["test_base_rate"], "scale": list(SCALE)},
-            "partial_p": {"null": "permutation of the target within blocks of five "
-                                  "banks consecutive in the controls' rank sum",
-                          "permutations": PERMUTATIONS, "seed": SEED,
-                          "block_width": BLOCK_WIDTH,
-                          "beside_it": "the t-approximation on k - 2 - q degrees "
-                                       "of freedom"},
-            "declaration": f"declared under Benjamini-Hochberg at {FDR_Q} and both "
-                           f"partials keeping the raw sign at a conditional p below "
-                           f"{PARTIAL_LEVEL}; the "
-                           f"scale-partial-only reading is recorded beside it",
-            "calibration": {"replicates": CALIBRATION_REPLICATES,
-                            "permutations": CALIBRATION_PERMUTATIONS,
-                            "block_widths": [3, 5, 10],
-                            "beside_it": "the t-approximation's own rate on the same "
-                                         "null",
-                            "null": "the descriptor and the target independent given "
-                                    "the controls, both driven by exp(3z) with z the "
-                                    "standardised rank sum"},
+            "rho": "Spearman's rank correlation between the label-free property and "
+                   "the shortfall",
+            "rho_partial_scale": "the partial rank correlation with both properties "
+                                 "of scale held fixed: the ranks of the property and "
+                                 "of the shortfall are each fitted by least squares "
+                                 "on the ranks of both properties of scale, and the "
+                                 "two sets of leftovers are correlated",
+            "scale": list(SCALE),
             "inputs": _inputs(dd.FAMILIES, (dd.FIT_KEY,), done),
             "descriptors_version": desc.VERSION, "rank_version": rank.VERSION}
 
 
-def association_rows(table: pd.DataFrame, target: np.ndarray, base_rate: np.ndarray,
-                     scale: np.ndarray, label: dict, progress: str) -> list[dict]:
-    """One target's row per descriptor: the raw correlation, both
-    partials, and their permutation and asymptotic p-values."""
-    rows = []
-    for name in track(list(desc.NAMES), progress):
-        x = table[f"log1p_{name}"].to_numpy(np.float64)
-        raw = rank.permutation_p(x, target, alternative="two-sided",
-                                 draws=PERMUTATIONS, seed=SEED)
-        by_rate = rank.conditional_permutation_p(x, target, base_rate,
-                                                 width=BLOCK_WIDTH,
-                                                 draws=PERMUTATIONS, seed=SEED)
-        row = {**label, "descriptor": name,
-               "group": next(g for g, members in desc.GROUPS.items()
-                             if name in members),
-               "constant_here": bool(np.ptp(x) == 0.0),
-               "rho": raw["rho"], "p_permutation": raw["p"],
-               "p_asymptotic": rank.asymptotic_p(raw["rho"], len(target)),
-               "rho_partial_base_rate": by_rate["rho"],
-               "p_partial_base_rate": by_rate["p_conditional"],
-               "p_partial_base_rate_asymptotic": by_rate["p_asymptotic"],
-               "tau_partial_base_rate": rank.partial_kendall(x, target, base_rate)}
-        if name in SCALE:
-            row |= {"rho_partial_scale": np.nan, "p_partial_scale": np.nan,
-                    "p_partial_scale_asymptotic": np.nan,
-                    "tau_partial_scale": np.nan}
-        else:
-            by_scale = rank.conditional_permutation_p(x, target, scale,
-                                                      width=BLOCK_WIDTH,
-                                                      draws=PERMUTATIONS, seed=SEED)
-            row |= {"rho_partial_scale": by_scale["rho"],
-                    "p_partial_scale": by_scale["p_conditional"],
-                    "p_partial_scale_asymptotic": by_scale["p_asymptotic"],
-                    "tau_partial_scale": rank.partial_kendall(x, target, scale)}
-        rows.append(row)
-    return rows
-
-
-def declare(table: pd.DataFrame) -> dict:
-    """One Benjamini-Hochberg pass over the whole table plus the
-    declaration columns, in place; returns the step-up's reading."""
-    fdr = rank.benjamini_hochberg(table["p_permutation"].to_numpy(), FDR_Q)
-    table["bh_position"] = fdr["position"]
-    table["bh_bar"] = fdr["bar"]
-    table["bh_declared"] = fdr["declared"]
-    survives = (np.sign(table["rho_partial_scale"]) == np.sign(table["rho"])) \
-        & (table["p_partial_scale"] < PARTIAL_LEVEL)
-    table["survives_scale_partial"] = survives.fillna(False)
-    survives_rate = (np.sign(table["rho_partial_base_rate"]) == np.sign(table["rho"])) \
-        & (table["p_partial_base_rate"] < PARTIAL_LEVEL)
-    table["survives_base_rate_partial"] = survives_rate.fillna(False)
-    table["declared_on_the_scale_partial"] = (table["bh_declared"]
-                                              & table["survives_scale_partial"])
-    table["declared"] = (table["declared_on_the_scale_partial"]
-                         & table["survives_base_rate_partial"])
-    table["tracks_arithmetic"] = (table["declared_on_the_scale_partial"]
-                                  & ~table["survives_base_rate_partial"])
-    return fdr
-
-
 def screen_metrics(run_dir: Path, done: dict) -> dict:
     t0 = time.time()
-    rows = []
     values = exp3_descriptors.descriptor_table(dd.FIT_KEY, done)
+    rows = []
     for family in dd.FAMILIES:
         target_table = dd.targets(dd.FIT_KEY, family)
         table = dd.aligned(values, target_table)
-        rows += association_rows(
-            table, target_table["delta"].to_numpy(np.float64),
-            target_table["test_base_rate"].to_numpy(np.float64),
-            _design(table, SCALE), {"family": family}, f"screen {family}")
+        target = target_table["delta"].to_numpy(np.float64)
+        scale = _design(table, SCALE)
+        for name in desc.NAMES:
+            x = table[f"log1p_{name}"].to_numpy(np.float64)
+            rows.append({
+                "family": family, "descriptor": name,
+                "group": next(g for g, members in desc.GROUPS.items() if name in members),
+                "rho": rank.spearman(x, target),
+                "rho_partial_scale": (np.nan if name in SCALE
+                                      else rank.partial_spearman(x, target, scale)["rho"])})
 
-    table = pd.DataFrame(rows)
-    fdr = declare(table)
-    table = table.set_index(["family", "descriptor"])
-
-    reference = dd.targets(dd.FIT_KEY, dd.FAMILIES[0])
-    calibration = {
-        "base_rate": rank.partial_size(reference["test_base_rate"].to_numpy(np.float64),
-                                       replicates=CALIBRATION_REPLICATES,
-                                       draws=CALIBRATION_PERMUTATIONS,
-                                       width=BLOCK_WIDTH, seed=SEED),
-        "scale": rank.partial_size(_design(dd.aligned(values, reference), SCALE),
-                                   replicates=CALIBRATION_REPLICATES,
-                                   draws=CALIBRATION_PERMUTATIONS,
-                                   width=BLOCK_WIDTH, seed=SEED)}
-
-    declared = {family: sorted(table.loc[family].index[table.loc[family, "declared"]])
-                for family in dd.FAMILIES}
-    on_scale_only = {
-        family: sorted(table.loc[family].index[
-            table.loc[family, "declared_on_the_scale_partial"]])
-        for family in dd.FAMILIES}
-    groups = {family: sorted({group for group, members in desc.GROUPS.items()
-                              if group != desc.BASELINE
-                              and set(members) & set(names)})
-              for family, names in declared.items()}
-    return {"dataset_key": dd.FIT_KEY, "k": int(len(reference)),
-            "family_size": int(len(table)),
-            "bh_declared_count": int(fdr["declared_count"]),
-            "bh_threshold": fdr["threshold"],
-            "declared": declared,
-            "declared_non_scale": {family: [n for n in names if n not in SCALE]
-                                   for family, names in declared.items()},
-            "declared_groups": groups,
-            "declared_on_the_scale_partial_only": {
-                family: [n for n in names if n not in SCALE]
-                for family, names in on_scale_only.items()},
-            "tracks_arithmetic": {
-                family: sorted(table.loc[family].index[table.loc[family, "tracks_arithmetic"]])
-                for family in dd.FAMILIES},
-            "partial_calibration": calibration,
+    table = pd.DataFrame(rows).set_index(["family", "descriptor"])
+    return {"dataset_key": dd.FIT_KEY, "k": int(len(values)),
             "seconds": time.time() - t0,
             "artifacts": {"screen": write_csv(run_dir, "screen", table)}}
 
 
-# ----------------------------------------------------------------- rank --
-
-def rank_config(family: str, done: dict) -> dict:
-    return {"experiment": EXPERIMENT, "check": "rank", "family": family,
-            "dataset_key": dd.FIT_KEY, "baseline": desc.BASELINE,
-            "statistic": "the paired bank-bootstrap of rho(frozen rule) minus "
-                         "rho(scale baseline) on the same out-of-fold predictions",
-            "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
-            "permutation": {"draws": PERMUTATIONS, "seed": SEED,
-                            "alternative": "greater"},
-            "criterion": "the bootstrap 5th percentile of the difference exceeds zero",
-            "target_resampling": "the same correlations recomputed on each of Experiment 1's "
-                                 "1,000 joint-bootstrap replicates of the target",
-            "inputs": _inputs((family,), (dd.FIT_KEY,), done),
-            "rule_version": rule.VERSION, "rank_version": rank.VERSION}
-
-
-def rank_metrics(family: str, run_dir: Path, done: dict) -> dict:
-    t0 = time.time()
-    winner, descriptors = _frozen(family, done)
-    selection = _selection_run(family, done)
-    oof = pd.read_csv(selection / "artifacts" / "oof.csv",
-                      dtype={"bank": str}).set_index("bank")
-    candidates = pd.read_csv(selection / "artifacts" / "candidates.csv") \
-        .set_index("candidate")
-    target_table = dd.targets(dd.FIT_KEY, family)
-    oof = oof.loc[target_table.index]
-    target = target_table["delta"].to_numpy(np.float64)
-
-    import json as _json
-    order = _json.loads((selection / "metrics.json").read_text())["candidate_order"]
-    repeats = np.load(selection / "artifacts" / "oof_repeats.npy")
-    by_candidate = {name: repeats[i] for i, name in enumerate(order)}
-
-    frozen_prediction = by_candidate[winner]
-    baseline_prediction = by_candidate[desc.BASELINE]
-    paired = rank.bootstrap_repeat_mean_difference(
-        frozen_prediction, baseline_prediction, target,
-        draws=BOOTSTRAP_DRAWS, seed=SEED)
-    permutation = rank.permutation_p_difference(
-        oof[winner].to_numpy(np.float64), oof[desc.BASELINE].to_numpy(np.float64),
-        target, draws=PERMUTATIONS, seed=SEED)
-
-    others = [name for name in candidates.index if name != desc.BASELINE]
-    best_other = max(others, key=lambda name: float(candidates.loc[name, "score"]))
-    other_paired = rank.bootstrap_repeat_mean_difference(
-        by_candidate[best_other], baseline_prediction, target,
-        draws=BOOTSTRAP_DRAWS, seed=SEED)
-
-    replicates = dd.target_replicates(dd.FIT_KEY, family)
-    rows = [{"arm": name,
-             "rho": rank.repeat_mean_rho(by_candidate[name], target),
-             **{f"target_{key}": value for key, value in
-                rank.target_resampling_rho(oof[name].to_numpy(np.float64),
-                                           replicates).items()
-                if not isinstance(value, list)}}
-            for name in dict.fromkeys((winner, desc.BASELINE, best_other))]
-
-    return {"family": family, "dataset_key": dd.FIT_KEY, "k": int(len(target)),
-            "frozen_rule": winner, "frozen_descriptors": list(descriptors),
-            "estimand": "the mean over repeats of the out-of-fold rank correlation",
-            "baseline_rho": rank.repeat_mean_rho(baseline_prediction, target),
-            "frozen_rho": rank.repeat_mean_rho(frozen_prediction, target),
-            "delta_rho": paired["delta"], "delta_rho_q05": paired["q05"],
-            "delta_rho_ci95": paired["ci95"], "delta_rho_sd": paired["sd"],
-            "permutation_p": permutation,
-            "beats_baseline": bool(paired["q05"] > 0),
-            "best_non_baseline": {
-                "candidate": best_other, "delta_rho": other_paired["delta"],
-                "q05": other_paired["q05"], "ci95": other_paired["ci95"]},
-            "frozen_is_baseline": bool(winner == desc.BASELINE),
-            "seconds": time.time() - t0,
-            "artifacts": {"arms": write_csv(run_dir, "arms",
-                                            pd.DataFrame(rows).set_index("arm"))}}
-
-
 # -------------------------------------------------------------- held-out --
-
-def grade(rho: float, p: float) -> str:
-    if not np.isfinite(rho):
-        return "not evaluable"
-    if rho > 0 and p < ONE_SIDED_LEVEL:
-        return "transfers"
-    return "directionally consistent, underpowered" if rho > 0 else "killed"
-
-
-def fitted_rule(family: str, done: dict, key: str,
-                descriptors: tuple[str, ...] | None = None) -> tuple[tuple[str, ...],
-                                                                     float, np.ndarray]:
-    """A candidate's coefficients from the weighted fit on every bank of ``key``;
-    the descriptor selection's winner unless another candidate is named."""
-    if descriptors is None:
-        descriptors = _frozen(family, done)[1]
-    target_table = dd.targets(key, family)
-    table = dd.aligned(exp3_descriptors.descriptor_table(key, done), target_table)
-    design = _design(table, descriptors)
-    keep = ~rule.constant_columns(design)
-    intercept, coefficients = rule.fit(design, target_table["delta"].to_numpy(np.float64),
-                                       dd.weights(target_table), keep)
-    return descriptors, intercept, coefficients
-
-
-def apply_rule(key: str, done: dict, family: str, descriptors: tuple[str, ...],
-               intercept: float, coefficients: np.ndarray) -> tuple[pd.DataFrame,
-                                                                    np.ndarray]:
-    target_table = dd.targets(key, family)
-    table = dd.aligned(exp3_descriptors.descriptor_table(key, done), target_table)
-    prediction = rule.predict(_design(table, descriptors), intercept, coefficients)
-    return target_table, prediction
-
 
 def holdout_config(family: str, done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "holdout", "family": family,
             "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "rule": "the descriptor selection's winner, coefficients frozen from the weighted fit on "
-                    "every fitting bank; nothing re-fitted within the held-out banks",
-            "beside_it": "the scale-only baseline, fitted and applied the same way, so "
-                         "the frozen rule's transfer and the baseline's are read on one "
-                         "page",
-            "permutation": {"draws": PERMUTATIONS, "seed": SEED,
-                            "alternative": "greater"},
-            "grading": {"transfers": f"rho > 0 and one-sided p < {ONE_SIDED_LEVEL}",
-                        "directionally consistent, underpowered":
-                            f"rho > 0, p >= {ONE_SIDED_LEVEL}",
-                        "killed": "rho <= 0"},
-            "level": ONE_SIDED_LEVEL,
-            "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
-            "target_resampling": "the same correlation recomputed on each of Experiment 1's "
-                                 "joint-bootstrap replicates of the held-out target",
-            "power": "44.5 % at a true rho of 0.5, n = 11, one-sided",
-            "reverse": "fit on the held-out banks and test on the fitting banks; "
-                       "a sanity check that gates nothing",
+            "rule": "the scale rule: one weighted least-squares fit (weights 1 over "
+                    "s_B squared) on every qualifying bank of the fitting dataset, "
+                    "written to coefficients.csv and applied unchanged to the "
+                    "held-out banks",
+            "descriptors": list(SCALE),
             "inputs": _inputs((family,), (dd.FIT_KEY, dd.HOLDOUT_KEY), done),
             "rule_version": rule.VERSION, "rank_version": rank.VERSION}
 
 
 def holdout_metrics(family: str, run_dir: Path, done: dict) -> dict:
     t0 = time.time()
-    descriptors, intercept, coefficients = fitted_rule(family, done, dd.FIT_KEY)
-    target_table, prediction = apply_rule(dd.HOLDOUT_KEY, done, family,
-                                          descriptors, intercept, coefficients)
+    fitting = dd.targets(dd.FIT_KEY, family)
+    design = _design(dd.aligned(exp3_descriptors.descriptor_table(dd.FIT_KEY, done),
+                                fitting), SCALE)
+    intercept, coefficients = rule.fit(design, fitting["delta"].to_numpy(np.float64),
+                                       dd.weights(fitting),
+                                       ~rule.constant_columns(design))
+
+    target_table = dd.targets(dd.HOLDOUT_KEY, family)
+    table = dd.aligned(exp3_descriptors.descriptor_table(dd.HOLDOUT_KEY, done),
+                       target_table)
+    prediction = rule.predict(_design(table, SCALE), intercept, coefficients)
     target = target_table["delta"].to_numpy(np.float64)
-    forward = rank.permutation_p(prediction, target, alternative="greater",
-                                 draws=PERMUTATIONS, seed=SEED)
-    interval = rank.bootstrap_rho(prediction, target, draws=BOOTSTRAP_DRAWS, seed=SEED)
-    resampled = rank.target_resampling_rho(
-        prediction, dd.target_replicates(dd.HOLDOUT_KEY, family))
-
-    baseline_descriptors = desc.GROUPS[desc.BASELINE]
-    _, baseline_intercept, baseline_coefficients = fitted_rule(
-        family, done, dd.FIT_KEY, baseline_descriptors)
-    _, baseline_prediction = apply_rule(dd.HOLDOUT_KEY, done, family,
-                                        baseline_descriptors, baseline_intercept,
-                                        baseline_coefficients)
-    baseline = rank.permutation_p(baseline_prediction, target, alternative="greater",
-                                  draws=PERMUTATIONS, seed=SEED)
-
-    reverse_descriptors, reverse_intercept, reverse_coefficients = fitted_rule(
-        family, done, dd.HOLDOUT_KEY)
-    reverse_table, reverse_prediction = apply_rule(dd.FIT_KEY, done, family,
-                                                   reverse_descriptors,
-                                                   reverse_intercept,
-                                                   reverse_coefficients)
-    reverse = rank.permutation_p(reverse_prediction,
-                                 reverse_table["delta"].to_numpy(np.float64),
-                                 alternative="greater", draws=PERMUTATIONS, seed=SEED)
-
-    banks = pd.DataFrame({"prediction": prediction,
-                          "baseline_prediction": baseline_prediction, "delta": target,
-                          "se": target_table["se"].to_numpy(),
-                          "test_base_rate": target_table["test_base_rate"].to_numpy()},
+    banks = pd.DataFrame({"prediction": prediction, "delta": target,
+                          "se": target_table["se"].to_numpy()},
                          index=target_table.index)
-    coefficient_rows = [{"term": "intercept", "value": intercept}] + [
-        {"term": f"log1p_{name}", "value": float(value)}
-        for name, value in zip(descriptors, coefficients)]
 
     return {"family": family, "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "k": int(len(target)),
-            "frozen_rule": _frozen(family, done)[0],
-            "frozen_descriptors": list(descriptors),
-            "rho": forward["rho"], "p_one_sided": forward["p"],
-            "bootstrap_ci95": interval["ci95"], "bootstrap_q05": interval["q05"],
-            "target_resampling": resampled,
-            "grade": grade(forward["rho"], forward["p"]),
-            "baseline": {"rho": baseline["rho"], "p_one_sided": baseline["p"],
-                         "grade": grade(baseline["rho"], baseline["p"]),
-                         "descriptors": list(baseline_descriptors)},
-            "reverse": {"rho": reverse["rho"], "p_one_sided": reverse["p"],
-                        "grade": grade(reverse["rho"], reverse["p"])},
+            "k": int(len(target)), "rule": desc.BASELINE, "descriptors": list(SCALE),
+            "rho": rank.spearman(prediction, target),
             "seconds": time.time() - t0,
             "artifacts": {"holdout": write_csv(run_dir, "holdout", banks),
                           "coefficients": write_csv(
                               run_dir, "coefficients",
-                              pd.DataFrame(coefficient_rows).set_index("term"))}}
+                              _coefficients(SCALE, intercept, coefficients))}}
 
 
 # -------------------------------------------------------------- ceiling --
@@ -524,12 +247,12 @@ def ceiling_descriptor_config() -> dict:
             "patterns": {"families": list(amlworld.PATTERN_FAMILIES),
                          "chain": list(amlworld.CHAIN_FAMILIES),
                          "join": amlworld.JOIN_FIELDS},
-            "patterns_file_sha256": _digest(
+            "patterns_file_sha256": sha256_of(
                 amlworld.RAW / f"{dd.data.DATASETS[dd.FIT_KEY][1]}_Patterns.txt"),
             "roster_and_base_rate_from": {
-                "note": "the roster and its test base rates are read from Experiment 1's "
-                        "shortfall Run for the tree family; the roster artefact is "
-                        "byte-identical across the three families",
+                "note": "the qualifying banks and their test base rates are read from "
+                        "Experiment 1's shortfall Run for the tree family; the roster "
+                        "artefact is byte-identical across the families",
                 "shortfall": dd.shortfall_hash(dd.FIT_KEY, dd.FAMILIES[0])},
             "ceiling_version": lab.VERSION, "descriptors_version": desc.VERSION,
             "rank_version": rank.VERSION}
@@ -563,7 +286,7 @@ def ceiling_descriptor_metrics(run_dir: Path) -> dict:
                       for name in amlworld.CHAIN_FAMILIES])
 
     records = []
-    for bank in track(list(target_table.index), "ceiling descriptors"):
+    for bank in track(list(target_table.index), "quantities computed from labels"):
         touches = (from_bank == bank) | (to_bank == bank)
         focal = touches & (y == 1)
         matched = family[focal] >= 0
@@ -626,16 +349,16 @@ def ceiling_config(family: str, done: dict) -> dict:
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
                                  "label_using": len(CEILING_CANDIDATES)},
-            "protocol": "the descriptor selection's folds, fitting rule, ranking metric and freeze rule, "
-                        "unchanged",
+            "protocol": "the folds, fitting rule, ranking metric and choice rule of "
+                        "the selection of the rules on label-free properties, unchanged",
             "price": "the best-scoring label-using candidate's mean out-of-fold "
-                     "correlation minus the frozen label-free rule's; a ceiling is a "
+                     "correlation minus the chosen label-free rule's; a ceiling is a "
                      "maximum, so it is read off the best score and not off the "
-                     "parsimony-favouring freeze rule, whose own winner is recorded "
+                     "parsimony-favouring choice rule, whose own winner is recorded "
                      "beside it",
             "beside_it": "the same reading over the label-using candidates that exclude "
                          "the test base rate, since average precision's chance level "
-                         "is that base rate, so the descriptor shares the target's "
+                         "is that base rate, so the quantity shares the target's "
                          "arithmetic",
             "inputs": {**_inputs((family,), (dd.FIT_KEY,), done),
                        "ceiling_descriptors": config_hash(ceiling_descriptor_config())},
@@ -675,7 +398,7 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
         results[name]["predictions"], baseline, target,
         draws=BOOTSTRAP_DRAWS, seed=SEED) for name in CEILING_ORDER}
     size = {candidate.name: len(candidate.descriptors) for candidate in CEILING_CANDIDATES}
-    frozen = rule.freeze(CEILING_ORDER, score, paired, size, desc.BASELINE,
+    chosen = rule.choose(CEILING_ORDER, score, paired, size, desc.BASELINE,
                          {n: bool(against_baseline[n]["q05"] > 0) for n in CEILING_ORDER})
 
     without_base_rate = [name for name in CEILING_ORDER
@@ -683,7 +406,6 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
                          {c.name: c.descriptors for c in CEILING_CANDIDATES}[name]]
     best_without_base_rate = rule.best_by_score(without_base_rate, score)
 
-    import json
     selection = json.loads((_selection_run(family, done) / "metrics.json").read_text())
     label_free_score = selection["winner_score"]
     rows = [{"candidate": name, "descriptors": " ".join(
@@ -693,7 +415,7 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
              "delta_vs_baseline": against_baseline[name]["delta"],
              "q05_vs_baseline": against_baseline[name]["q05"],
              "ceiling": name == best,
-             "freeze_winner": name == frozen["winner"]} for name in CEILING_ORDER]
+             "choice_winner": name == chosen["winner"]} for name in CEILING_ORDER]
     oof = pd.DataFrame({name: results[name]["prediction"] for name in CEILING_ORDER},
                        index=target_table.index)
     oof.insert(0, "delta", target)
@@ -701,24 +423,24 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
     return {"family": family, "dataset_key": dd.FIT_KEY, "k": int(len(target)),
             "ceiling_rule": best, "ceiling_score": score[best],
             "ceiling_reading": "the best-scoring label-using candidate, since a ceiling "
-                               "is a maximum; the freeze rule's own winner is recorded "
+                               "is a maximum; the choice rule's own winner is recorded "
                                "beside it and is not the ceiling",
             "ceiling_rule_without_base_rate": best_without_base_rate,
             "ceiling_score_without_base_rate": score[best_without_base_rate],
-            "label_free_rule": selection["freeze"]["winner"],
+            "label_free_rule": selection["choice"]["winner"],
             "label_free_score": label_free_score,
             "price_of_label_freeness": float(score[best] - label_free_score),
             "price_without_base_rate": float(
                 score[best_without_base_rate] - label_free_score),
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
                                  "label_using": len(CEILING_CANDIDATES)},
-            "freeze": frozen, "seconds": time.time() - t0,
+            "choice": chosen, "seconds": time.time() - t0,
             "artifacts": {"candidates": write_csv(
                 run_dir, "candidates", pd.DataFrame(rows).set_index("candidate")),
                 "oof": write_csv(run_dir, "oof", oof)}}
 
 
-# ---------------------------------------------------- the bank-facing rule --
+# ---------------------------------------- the rule on scale and confirmed cases --
 
 def bank_facing_counts_config() -> dict:
     return {"experiment": EXPERIMENT, "check": "bank_facing_counts",
@@ -726,8 +448,9 @@ def bank_facing_counts_config() -> dict:
             "window": "split == 0 (the training window), same-account rows excluded, "
                       "labels read: the count is the bank's own confirmed cases",
             "descriptor": {"laundering_count": lab.DESCRIPTIONS["laundering_count"]},
-            "definition": "the ceiling's laundering_count, computed once on "
-                          "the held-out dataset so the frozen rule can transfer",
+            "definition": "the ceiling's laundering_count, computed on the held-out "
+                          "dataset so that the rule on scale and confirmed cases can "
+                          "be applied there",
             "roster_and_targets_from": {
                 "shortfall": dd.shortfall_hash(dd.HOLDOUT_KEY, dd.FAMILIES[0])},
             "ceiling_version": lab.VERSION}
@@ -765,35 +488,15 @@ def bank_facing_counts_metrics(run_dir: Path) -> dict:
 def bank_facing_config(family: str, done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "bank_facing", "family": family,
             "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "rule": "scale plus the bank's own training-window laundering-payment "
-                    "count: one weighted least-squares fit (weights 1 over s_B "
-                    "squared, as the descriptor selection used) on the ceiling Run's 107 rows, inputs "
-                    "log(1+payment count), log(1+active accounts), "
-                    "log(1+laundering count); the coefficients are frozen to the "
-                    "coefficients.csv artefact and applied unchanged to the held-out "
-                    "banks",
-            "admissibility": "own ledger only holds: every input is the "
-                             "bank's own. No labels does not: the count is "
-                             "the bank's own confirmed cases, so the label-free rule "
-                             "remains the fallback where case counts are "
-                             "withheld",
-            "presentation": "the rule's output is an ordering, valid within the "
-                            "fitted range of 5,198 to 125,014 training-window "
-                            "payments per bank; the level is not quoted",
+            "rule": "the rule on scale and confirmed cases: one weighted least-squares "
+                    "fit (weights 1 over s_B squared, as the selection used) on the "
+                    "ceiling Run's 107 rows, inputs log(1+payment count), "
+                    "log(1+active accounts), log(1+laundering count), written to "
+                    "coefficients.csv and applied unchanged to the held-out banks",
             "descriptors": list(BANK_FACING),
-            "permutation": {"draws": PERMUTATIONS, "seed": SEED,
-                            "alternative": "greater"},
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
-            "grading": {"transfers": f"rho > 0 and one-sided p < {ONE_SIDED_LEVEL}",
-                        "directionally consistent, underpowered":
-                            f"rho > 0, p >= {ONE_SIDED_LEVEL}",
-                        "killed": "rho <= 0"},
-            "level": ONE_SIDED_LEVEL,
-            "target_resampling": "the same correlation recomputed on each of Experiment 1's "
-                                 "joint-bootstrap replicates of the held-out target",
-            "beside_it": "the frozen label-free rule's held-out reading, from the "
-                         "holdout Run, and the ceiling Run's out-of-fold score for "
-                         "the same candidate",
+            "beside_it": "the scale rule's held-out reading, from the holdout Run, and "
+                         "the ceiling Run's out-of-fold score for the same rule",
             "inputs": {**_inputs((family,), (dd.FIT_KEY, dd.HOLDOUT_KEY), done),
                        "ceiling_descriptors": config_hash(ceiling_descriptor_config()),
                        "bank_facing_counts": config_hash(bank_facing_counts_config()),
@@ -804,8 +507,6 @@ def bank_facing_config(family: str, done: dict) -> dict:
 
 
 def bank_facing_metrics(family: str, run_dir: Path, done: dict) -> dict:
-    import json
-
     t0 = time.time()
     target_table = dd.targets(dd.FIT_KEY, family)
     values = dd.aligned(exp3_descriptors.descriptor_table(dd.FIT_KEY, done), target_table)
@@ -819,13 +520,12 @@ def bank_facing_metrics(family: str, run_dir: Path, done: dict) -> dict:
     target = target_table["delta"].to_numpy(np.float64)
     keep = ~rule.constant_columns(design)
     intercept, coefficients = rule.fit(design, target, dd.weights(target_table), keep)
-    fitted = rule.predict(design, intercept, coefficients)
 
     payments = table["payment_count"].to_numpy(np.float64)
     fitted_range = (float(payments.min()), float(payments.max()))
     assert fitted_range == FITTED_RANGE, (
-        f"the fitting roster's payment-count range is {fitted_range}, not the "
-        f"fixed {FITTED_RANGE}; the rows are not the ceiling Run's")
+        f"the fitting banks' payment-count range is {fitted_range}, not "
+        f"{FITTED_RANGE}; the rows are not the ceiling Run's")
 
     holdout_targets = dd.targets(dd.HOLDOUT_KEY, family)
     holdout_values = dd.aligned(exp3_descriptors.descriptor_table(dd.HOLDOUT_KEY, done),
@@ -839,59 +539,40 @@ def bank_facing_metrics(family: str, run_dir: Path, done: dict) -> dict:
     prediction = rule.predict(_design(holdout_table, BANK_FACING),
                               intercept, coefficients)
     held = holdout_targets["delta"].to_numpy(np.float64)
-    forward = rank.permutation_p(prediction, held, alternative="greater",
-                                 draws=PERMUTATIONS, seed=SEED)
     interval = rank.bootstrap_rho(prediction, held, draws=BOOTSTRAP_DRAWS, seed=SEED)
-    resampled = rank.target_resampling_rho(
-        prediction, dd.target_replicates(dd.HOLDOUT_KEY, family))
 
-    label_free = json.loads(
-        (done[config_hash(holdout_config(family, done))] / "metrics.json").read_text())
+    holdout_run = done[config_hash(holdout_config(family, done))]
+    label_free = json.loads((holdout_run / "metrics.json").read_text())
     ceiling_run = done[config_hash(ceiling_config(family, done))]
     ceiling_metrics_ = json.loads((ceiling_run / "metrics.json").read_text())
     candidates = pd.read_csv(
         verify(ceiling_run, ceiling_metrics_["artifacts"]["candidates"])) \
         .set_index("candidate")
 
+    holdout_csv = pd.read_csv(verify(holdout_run, label_free["artifacts"]["holdout"]),
+                              dtype={"bank": str}).set_index("bank")
     banks = pd.DataFrame({"laundering_count": holdout_table["laundering_count"].to_numpy(),
                           "prediction": prediction,
-                          "label_free_prediction": np.nan, "delta": held,
-                          "se": holdout_targets["se"].to_numpy()},
+                          "label_free_prediction": holdout_csv.loc[
+                              holdout_targets.index, "prediction"].to_numpy(),
+                          "delta": held, "se": holdout_targets["se"].to_numpy()},
                          index=holdout_targets.index)
-    holdout_csv = pd.read_csv(
-        verify(done[config_hash(holdout_config(family, done))],
-               label_free["artifacts"]["holdout"]),
-        dtype={"bank": str}).set_index("bank")
-    banks["label_free_prediction"] = holdout_csv.loc[banks.index, "prediction"]
-    coefficient_rows = [{"term": "intercept", "value": intercept}] + [
-        {"term": f"log1p_{name}", "value": float(value)}
-        for name, value in zip(BANK_FACING, coefficients)]
+    coefficient_table = _coefficients(BANK_FACING, intercept, coefficients)
 
     return {"family": family, "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
             "k": int(len(held)),
             "descriptors": list(BANK_FACING),
-            "coefficients": {row["term"]: row["value"] for row in coefficient_rows},
+            "coefficients": coefficient_table["value"].to_dict(),
             "fitted_range_payment_count": list(fitted_range),
-            "fit_rho_in_sample": rank.spearman(fitted, target),
-            "fit_rho_in_sample_reading": "the weighted fit read back on its own 107 "
-                                         "fitting banks, optimistic by construction; "
-                                         "the out-of-fold score below is the honest "
-                                         "level",
             "ceiling_oof_score": float(candidates.loc["scale+laundering_count",
                                                       "score"]),
-            "rho": forward["rho"], "p_one_sided": forward["p"],
-            "bootstrap_ci95": interval["ci95"], "bootstrap_q05": interval["q05"],
-            "target_resampling": resampled,
-            "grade": grade(forward["rho"], forward["p"]),
-            "label_free": {"rule": label_free["frozen_rule"],
-                           "rho": label_free["rho"],
-                           "p_one_sided": label_free["p_one_sided"],
-                           "grade": label_free["grade"]},
+            "rho": rank.spearman(prediction, held),
+            "bootstrap_ci95": interval["ci95"],
+            "label_free": {"rule": label_free["rule"], "rho": label_free["rho"]},
             "seconds": time.time() - t0,
             "artifacts": {"holdout": write_csv(run_dir, "holdout", banks),
-                          "coefficients": write_csv(
-                              run_dir, "coefficients",
-                              pd.DataFrame(coefficient_rows).set_index("term"))}}
+                          "coefficients": write_csv(run_dir, "coefficients",
+                                                    coefficient_table)}}
 
 
 # ----------------------------------------------------------------- main --
@@ -904,34 +585,21 @@ def cmd(stage: str, done: dict) -> None:
               f"difference {metrics['worst_standard_error_difference']:.2e} — "
               f"{'pass' if metrics['pass'] else 'FAIL'}", flush=True)
         if not metrics["pass"]:
-            raise SystemExit("the inputs gate failed; no Experiment 3 reading is believed until "
-                             "the difference is localised")
+            raise SystemExit("the inputs gate failed; localise the difference before "
+                             "reading any Experiment 3 result")
     elif stage == "screen":
         metrics = run(EXPERIMENT, screen_config(done),
                       lambda config, run_dir: screen_metrics(run_dir, done), done=done)
-        print(f"screen: {metrics['bh_declared_count']} of {metrics['family_size']} "
-              f"associations declared under Benjamini-Hochberg; declared after the "
-              f"scale partial: "
-              f"{ {f: len(v) for f, v in metrics['declared_non_scale'].items()} }",
+        print(f"screen: {len(desc.NAMES)} label-free properties against "
+              f"{len(dd.FAMILIES)} families' shortfalls on {metrics['k']} banks",
               flush=True)
-    elif stage == "rank":
-        for family in dd.FAMILIES:
-            metrics = run(EXPERIMENT, rank_config(family, done),
-                          lambda config, run_dir, f=family:
-                          rank_metrics(f, run_dir, done), done=done)
-            print(f"rank {family}: frozen {metrics['frozen_rule']} at rho "
-                  f"{metrics['frozen_rho']:+.4f}, baseline {metrics['baseline_rho']:+.4f}, "
-                  f"delta {metrics['delta_rho']:+.4f} (q05 {metrics['delta_rho_q05']:+.4f}) "
-                  f"— beats baseline: {metrics['beats_baseline']}", flush=True)
     elif stage == "holdout":
         for family in dd.FAMILIES:
             metrics = run(EXPERIMENT, holdout_config(family, done),
                           lambda config, run_dir, f=family:
                           holdout_metrics(f, run_dir, done), done=done)
-            print(f"holdout {family}: rho {metrics['rho']:+.4f}, one-sided p "
-                  f"{metrics['p_one_sided']:.4f} — {metrics['grade']}; baseline rho "
-                  f"{metrics['baseline']['rho']:+.4f}; reverse rho "
-                  f"{metrics['reverse']['rho']:+.4f}", flush=True)
+            print(f"holdout {family}: the scale rule ranks {dd.HOLDOUT_KEY}'s "
+                  f"{metrics['k']} banks at rho {metrics['rho']:+.4f}", flush=True)
     elif stage == "ceiling":
         metrics = run(EXPERIMENT, ceiling_descriptor_config(),
                       lambda config, run_dir: ceiling_descriptor_metrics(run_dir),
@@ -963,18 +631,22 @@ def cmd(stage: str, done: dict) -> None:
             out = run(EXPERIMENT, bank_facing_config(family, done),
                       lambda config, run_dir, f=family:
                       bank_facing_metrics(f, run_dir, done), done=done)
-            print(f"bank_facing {family}: held-out rho {out['rho']:+.4f}, "
-                  f"one-sided p {out['p_one_sided']:.4f} — {out['grade']}; "
-                  f"label-free rho {out['label_free']['rho']:+.4f}; "
-                  f"out-of-fold {out['ceiling_oof_score']:+.4f}", flush=True)
+            low, high = out["bootstrap_ci95"]
+            print(f"bank_facing {family}: held-out rho {out['rho']:+.4f} "
+                  f"(95 % interval {low:+.2f} to {high:+.2f}); scale rule "
+                  f"{out['label_free']['rho']:+.4f}; out-of-fold "
+                  f"{out['ceiling_oof_score']:+.4f}", flush=True)
     else:
         raise SystemExit(f"unknown stage {stage!r}")
 
 
-STAGES = ("inputs", "screen", "rank", "holdout", "ceiling", "bank_facing")
+STAGES = ("inputs", "screen", "holdout", "ceiling", "bank_facing")
 
 
 def main() -> int:
+    if {"-h", "--help"} & set(sys.argv[1:]):
+        print(__doc__)
+        return 0
     stages = sys.argv[1:] or list(STAGES)
     unknown = [stage for stage in stages if stage not in STAGES]
     if unknown:

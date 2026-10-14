@@ -1,26 +1,26 @@
 #!/usr/bin/env python
-"""Experiment 4 — cross-bank model transfer. Tests hypothesis 3.
+"""Experiment 4: Borrowing another bank's detector (Chapter 6). Tests
+hypothesis 3.
 
 Units, each one Run keyed by config hash (skip-if-done over the Run log):
 
-  lender_tree:<key>:<bank>    retrain one lender's solo grid; ship the boosters
-  lender_blind:<key>:<bank>   the same on the own-fields vocabulary
+  lender_tree:<key>:<bank>    refit one lender's eight boosted trees of
+                              Experiment 1 and ship them
   gnn_identity_gate:<key>     the transfer inference path must reproduce every
                               (lender, seed) Experiment 1 solo Run's test_probs < 1e-6
-  transfer_tree:<key>:<bank>  every candidate's scores on one borrower's rows
-  transfer_blind:<key>:<bank>
-  transfer_gnn:<key>:<bank>
+  transfer_tree:<key>:<bank>  every lender's detector scores one bank's
+  transfer_gnn:<key>:<bank>   validation window and test set
 
   uv run python scripts/exp4.py plan
   uv run python scripts/exp4.py run <unit> [...]
   uv run python scripts/exp4.py launch [--budget 14] [--machine-gb 24]
   uv run python scripts/exp4.py status
 
-Nothing but a model file crosses banks: a borrower's features come from its
-own ledger only; the lender's object is the eight persisted boosters (tree,
-blind) or Experiment 1's three seed weights plus the lender's numeric standardisation
-constants (GNN), which travel with the weights as a deployed pipeline's
-scaler does.
+Only a fitted detector crosses between banks: a borrowing bank's features
+come from its own ledger only. The lender's detector is its eight boosted trees
+(tree family) or Experiment 1's three fitted GNNs plus the lender's numeric
+standardisation constants (GNN family), which travel with the weights as a
+deployed pipeline's scaler does.
 
 The GNN identity gate replays each Experiment 1 solo Run's random stream — the
 neighbour sampler is the only RNG consumer while a loader iterates, and its
@@ -29,13 +29,11 @@ train and validation loaders positions the stream exactly where Experiment 1's t
 inference ran — then loads the persisted weights and scores the lender's own
 test window through the transfer path. Transfer cells seed the stream fresh
 per (borrower, seed), so all candidates at one seed score identical sampled
-contexts; the residual inference-sampling wobble lands in the between-seed
-variance the policy analysis folds into s_B.
+contexts; the remaining variation from inference sampling falls within the
+variation between seeds, which the interval of the weighted mean gain includes.
 
 Execution: Experiment 1's settings (M_TORCH_THREADS 4, M_LGB_THREADS_SOLO 2,
-M_DEVICE cpu). M_SMOKE=1 runs against sweden_100K_easy and requires
-M_EXPERIMENTS_DIR pointing away from the real Run log (symlink exp1 and exp2
-inside it to the real logs so adoption by config identity still finds them).
+M_DEVICE cpu).
 """
 from __future__ import annotations
 
@@ -60,12 +58,11 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from m import completed, run, seed_all  # noqa: E402
 from m.artifacts import load_array, verify, write_array, write_text  # noqa: E402
-from m.features import CATEGORICAL_FIELDS, account_codes  # noqa: E402
+from m.features import CATEGORICAL_FIELDS  # noqa: E402
 from m.features import VERSION as FEATURES_VERSION  # noqa: E402
-from m.frame import endpoint_history  # noqa: E402
 from m.gnn import ASSEMBLY_VERSION  # noqa: E402
 from m.gnn import VERSION as GNN_VERSION  # noqa: E402
-from m.gnn import (GNNConfig, PaymentGNN, edge_inputs, n_code_levels,  # noqa: E402
+from m.gnn import (PaymentGNN, edge_inputs, n_code_levels,  # noqa: E402
                    payment_graph, prefetch, shipped_constants)
 from m.grid import EARLY_STOP, GRID, NUM_ROUND  # noqa: E402
 from m.lgbdata import (DS_PARAMS, SEQUENCE_VERSION, construct, fit_grid,  # noqa: E402
@@ -74,9 +71,8 @@ from m.runlog import REPO_ROOT, config_hash, experiments_root  # noqa: E402
 from m.stats import average_precision  # noqa: E402
 
 EXPERIMENT = "exp4"
-SMOKE = exp1.SMOKE
-KEYS = ["sweden_100K_easy"] if SMOKE else ["HI-Medium", "HI-Small"]
-PRIMARY_KEY = "sweden_100K_easy" if SMOKE else "HI-Medium"
+KEYS = ["HI-Medium", "HI-Small"]
+PRIMARY_KEY = "HI-Medium"
 N_LENDERS = 5
 SEEDS = [0, 1, 2]
 EXPECTED_LENDERS = {"HI-Medium": ["020", "000", "011", "012", "01226"]}
@@ -87,26 +83,25 @@ LGB_THREADS = exp1.LGB_THREADS_SOLO
 CAT_COLUMNS = ("fmt", "pay_ccy", "recv_ccy")
 LOG_DIR = Path(os.environ.get("M_LOG_DIR", REPO_ROOT / "logs" / "exp4"))
 
-# Experiment 1's GNN configuration, independent of any smoke shortening;
-# adopted lender Runs are asserted against it.
-GNN = GNNConfig(hidden=64, embed_dim=8, fanout=(10, 10), batch_size=4096,
-                lr=2e-3, pos_weight=6.0, max_epochs=15, patience=3,
-                loader_workers=0)
+GNN = exp1.GNN
 
 PROTOCOL = {
-    "lenders": "the five largest qualifying banks by training-window "
-               "laundering payments; a lender never borrows from itself",
-    "policy": "validate-then-borrow: the candidate with the highest median "
-              "(tree, blind: over the eight settings) or mean (gnn: over the "
-              "three seeds) validation AP on the borrower's validation rows",
-    "abstain": "adopt only if the pick's validation AP exceeds the "
-               "borrower's own solo validation AP from its Experiment 1 Run; an "
-               "abstaining bank keeps its own detector and scores zero gain",
-    "pairing": {"tree": "median_over_grid", "blind": "median_over_grid",
-                "gnn": "mean_over_seeds"},
-    "movement": "only a model file crosses institutions; the GNN family "
-                "ships the lender's numeric standardisation constants with "
-                "the weights",
+    "lenders": "the five qualifying banks that hold the most confirmed cases "
+               "(training-window laundering payments); every other qualifying "
+               "bank is offered the five lenders' detectors, and each lender "
+               "those of the other four",
+    "choice": "the lender whose detector has the highest validation average "
+              "precision on the bank's validation window: the median over the "
+              "eight configurations (tree family) or the mean over the three "
+              "seeds (GNN family)",
+    "abstain": "the bank borrows the chosen detector only if its validation "
+               "average precision exceeds that of the bank's own detector from "
+               "its Experiment 1 Run; a bank that abstains keeps its own "
+               "detector and has a gain of zero",
+    "pairing": {"tree": "median_over_grid", "gnn": "mean_over_seeds"},
+    "movement": "only a fitted detector crosses between banks; the GNN "
+                "family's detector carries the lender's numeric "
+                "standardisation constants with the weights",
 }
 
 
@@ -127,8 +122,7 @@ class Unit:
 
     @property
     def family(self) -> str:
-        return {"lender_tree": "tree", "lender_blind": "blind",
-                "transfer_tree": "tree", "transfer_blind": "blind",
+        return {"lender_tree": "tree", "transfer_tree": "tree",
                 "transfer_gnn": "gnn", "gnn_identity_gate": "gnn"}[self.check]
 
 
@@ -155,20 +149,8 @@ def menu_for(key: str, bank: str) -> list[str]:
 
 # ------------------------------------------------- adoption from Experiment 1's log --
 
-def exp1_real_config(unit: exp1.Unit) -> dict:
-    """The Experiment 1 unit's real (non-smoke) config, so adoption by config
-    identity finds the real Runs even when this process runs under M_SMOKE."""
-    config = exp1.unit_config(unit)
-    config.pop("smoke", None)
-    if unit.family in ("tree", "blind"):
-        config["num_round"] = NUM_ROUND
-    else:
-        config["gnn"] = GNN.as_dict()
-    return config
-
-
 def exp1_run_dir(done1: dict, unit: exp1.Unit) -> Path:
-    path = done1.get(config_hash(exp1_real_config(unit)))
+    path = done1.get(config_hash(exp1.unit_config(unit)))
     if path is None:
         raise SystemExit(f"Experiment 1 Run for {unit.spec} not found; Experiment 4 adopts it by "
                          f"config identity")
@@ -215,19 +197,6 @@ def feature_matrix(cache: exp1.LedgerCache, key: str, bank: str, family: str):
     return ledger, X
 
 
-def never_seen_scores(ledger, bank: str) -> np.ndarray:
-    """The never-seen counterparty rule on the bank's own ledger frame
-    (the frame probe's external rule): minus the external endpoint's strictly
-    earlier appearances, on the test rows."""
-    payer, payee = account_codes(ledger)
-    ts = ledger["ts"].to_numpy(np.int64)
-    hist_p, hist_q = endpoint_history(payer, payee, ts)
-    payer_is_own = (ledger["from_bank"].astype(str) == bank).to_numpy()
-    external = np.where(payer_is_own, hist_q, hist_p)
-    te = ledger["split"].to_numpy(np.int8) == 2
-    return -external[te].astype(np.float32)
-
-
 # --------------------------------------------------------------- lender --
 
 def base_config(unit: Unit) -> dict:
@@ -240,8 +209,6 @@ def base_config(unit: Unit) -> dict:
               "features_version": FEATURES_VERSION}
     if unit.bank != "-":
         config["bank"] = unit.bank
-    if SMOKE:
-        config["smoke"] = True
     return config
 
 
@@ -251,7 +218,7 @@ def lender_config(unit: Unit, done1: dict) -> dict:
         "role": "lender", "grid": GRID, "fixed": exp1.FIXED_EXP1,
         "num_round": NUM_ROUND, "early_stop": EARLY_STOP,
         "dataset_params": DS_PARAMS,
-        "columns": "full" if unit.family == "tree" else "own_fields",
+        "columns": "full",
         "n_feature_columns": len(exp1.COLUMNS[unit.family]),
         "table": "ledger", "sequence_version": SEQUENCE_VERSION,
         "num_threads": LGB_THREADS,
@@ -405,7 +372,7 @@ def gate_metrics(key: str, inputs: dict[str, dict[int, Path]],
             loaders = {s: gnn_loader(graph, payer, payee, ts, rows[s], sampler,
                                      shuffle=(s == "train"))
                        for s in ("train", "val", "test")}
-            model = PaymentGNN(n_codes, NUMERIC_DIM + 1, GNN, head="edge")
+            model = PaymentGNN(n_codes, NUMERIC_DIM + 1, GNN)
             for _ in range(m["epochs"]):
                 for _ in prefetch(loaders["train"]):
                     pass
@@ -461,10 +428,7 @@ def lender_run_dir(done: dict, key: str, family: str, lender: str,
 def transfer_tree_config(unit: Unit, done: dict, done1: dict) -> dict:
     candidates = menu_for(unit.key, unit.bank)
     return base_config(unit) | {
-        "role": "borrower", "candidates": candidates,
-        "columns": "full" if unit.family == "tree" else "own_fields",
-        "never_seen_rule": "minus the external endpoint's strictly earlier "
-                           "appearances in the borrower's own ledger frame",
+        "role": "borrower", "candidates": candidates, "columns": "full",
         "inputs": {
             "lenders": {c: _hash_of(lender_run_dir(done, unit.key, unit.family,
                                                    c, done1))
@@ -515,7 +479,7 @@ def transfer_tree_metrics(unit: Unit, cache: exp1.LedgerCache,
     test_payment = ledger["payment"].to_numpy(np.int64)[te]
     solo = solo_dirs(done1, key, family, bank)[0]
     assert np.array_equal(test_payment, _artifact(solo, "test_payment")), \
-        f"{bank}: the transfer exam paper differs from Experiment 1's"
+        f"{bank}: the transfer test set differs from Experiment 1's"
 
     val_scores = np.empty((len(candidates), len(GRID), int(va.sum())), np.float32)
     test_scores = np.empty((len(candidates), len(GRID), int(te.sum())), np.float32)
@@ -533,18 +497,14 @@ def transfer_tree_metrics(unit: Unit, cache: exp1.LedgerCache,
                         for s in range(len(GRID))]}
 
     solo_metrics = _metrics(solo)
-    never = never_seen_scores(ledger, bank)
     return {"bank": bank, "candidates": candidates,
             "per_candidate": per_candidate,
             "own_val_ap": [s["val_ap"] for s in solo_metrics["settings"]],
-            "never_seen_test_ap": float(average_precision(yte, never)),
             "rows": {"val": int(va.sum()), "test": int(te.sum())},
             "positives": {"val": int(yva.sum()), "test": int(yte.sum())},
             "artifacts": {
                 "val_scores": write_array(run_dir, "val_scores", val_scores),
                 "test_scores": write_array(run_dir, "test_scores", test_scores),
-                "never_seen_scores": write_array(run_dir, "never_seen_scores",
-                                                 never),
                 "test_payment": write_array(run_dir, "test_payment",
                                             test_payment)},
             "seconds": time.time() - t0}
@@ -567,12 +527,10 @@ def transfer_gnn_config(unit: Unit, done: dict, done1: dict) -> dict:
         "device": exp1.DEVICE_NAME, "torch_threads": TORCH_THREADS,
         "seeding": "seed_all(seed) before each (borrower, seed) sampling "
                    "pass, so every candidate at one seed scores identical "
-                   "sampled contexts; inference-sampling wobble lands in the "
-                   "between-seed variance folded into s_B",
+                   "sampled contexts; the remaining variation from inference "
+                   "sampling falls within the variation between seeds",
         "standardisation": "the borrower's tensors are standardised with "
                            "each lender's shipped constants",
-        "never_seen_rule": "minus the external endpoint's strictly earlier "
-                           "appearances in the borrower's own ledger frame",
         "inputs": {
             "gate": _hash_of(gate[0]),
             "lenders": {c: {str(s): _hash_of(
@@ -620,7 +578,7 @@ def transfer_gnn_metrics(unit: Unit, cache: exp1.LedgerCache, done: dict,
     solo = solo_dirs(done1, key, "gnn", bank)
     test_payment = ledger["payment"].to_numpy(np.int64)[rows["test"]]
     assert np.array_equal(test_payment, _artifact(solo[0], "test_payment")), \
-        f"{bank}: the transfer exam paper differs from Experiment 1's"
+        f"{bank}: the transfer test set differs from Experiment 1's"
 
     states = {c: {s: load_state(exp1_run_dir(done1, exp1.Unit("gnn_solo", key, c, s)))
                   for s in SEEDS} for c in candidates}
@@ -639,8 +597,7 @@ def transfer_gnn_metrics(unit: Unit, cache: exp1.LedgerCache, done: dict,
                                  shuffle=False)
         models, outs_val, outs_test = {}, {}, {}
         for c in candidates:
-            model = PaymentGNN(state_n_codes(states[c][seed]), NUMERIC_DIM + 1,
-                               GNN, head="edge")
+            model = PaymentGNN(state_n_codes(states[c][seed]), NUMERIC_DIM + 1, GNN)
             model.load_state_dict(states[c][seed])
             model.eval()
             models[c] = model
@@ -666,20 +623,16 @@ def transfer_gnn_metrics(unit: Unit, cache: exp1.LedgerCache, done: dict,
             "val_ap": val_ap,
             "test_ap": [float(average_precision(yte, test_probs[i, j]))
                         for j in range(len(SEEDS))]}
-    never = never_seen_scores(ledger, bank)
     return {"bank": bank, "menu": menu, "candidates": candidates,
             "excluded": excluded, "seeds": SEEDS,
             "per_candidate": per_candidate,
             "own_val_ap": {str(s): _metrics(d)["val_ap"]
                            for s, d in zip(SEEDS, solo)},
-            "never_seen_test_ap": float(average_precision(yte, never)),
             "rows": {"val": n_val, "test": n_test},
             "positives": {"val": int(yva.sum()), "test": int(yte.sum())},
             "artifacts": {
                 "val_probs": write_array(run_dir, "val_probs", val_probs),
                 "test_probs": write_array(run_dir, "test_probs", test_probs),
-                "never_seen_scores": write_array(run_dir, "never_seen_scores",
-                                                 never),
                 "test_payment": write_array(run_dir, "test_payment",
                                             test_payment)},
             "seconds": time.time() - t0}
@@ -688,11 +641,11 @@ def transfer_gnn_metrics(unit: Unit, cache: exp1.LedgerCache, done: dict,
 # --------------------------------------------------------------- runner --
 
 def unit_config(unit: Unit, done: dict, done1: dict) -> dict:
-    if unit.check in ("lender_tree", "lender_blind"):
+    if unit.check == "lender_tree":
         return lender_config(unit, done1)
     if unit.check == "gnn_identity_gate":
         return gate_config(unit.key, gate_inputs(done1, unit.key))
-    if unit.check in ("transfer_tree", "transfer_blind"):
+    if unit.check == "transfer_tree":
         return transfer_tree_config(unit, done, done1)
     if unit.check == "transfer_gnn":
         return transfer_gnn_config(unit, done, done1)
@@ -707,7 +660,7 @@ def execute(unit: Unit, done: dict, done1: dict, cache: exp1.LedgerCache,
                 return fn(config, run_dir) | exp1.memory_record(sampler)
             return wrapped
 
-        if unit.check in ("lender_tree", "lender_blind"):
+        if unit.check == "lender_tree":
             return run(EXPERIMENT, unit_config(unit, done, done1),
                        sampled(lambda config, run_dir:
                                lender_metrics(unit, cache, done1, run_dir)),
@@ -718,7 +671,7 @@ def execute(unit: Unit, done: dict, done1: dict, cache: exp1.LedgerCache,
                        sampled(lambda config, run_dir:
                                gate_metrics(unit.key, inputs, cache, run_dir)),
                        done=done)
-        if unit.check in ("transfer_tree", "transfer_blind"):
+        if unit.check == "transfer_tree":
             return run(EXPERIMENT, unit_config(unit, done, done1),
                        sampled(lambda config, run_dir:
                                transfer_tree_metrics(unit, cache, models, done,
@@ -766,8 +719,7 @@ def cmd_run(specs: list[str]) -> int:
     done1 = completed("exp1")
     cache = exp1.LedgerCache()
     models = LenderModels()
-    print(f"run {len(specs)} units (root {experiments_root()}, smoke {SMOKE})",
-          flush=True)
+    print(f"run {len(specs)} units (root {experiments_root()})", flush=True)
     failures = 0
     for spec in specs:
         unit = parse_unit(spec)
@@ -815,27 +767,25 @@ def plan_jobs(done: dict, done1: dict, exclude: set[str] = frozenset()) -> list[
     for key in KEYS:
         roster = data.read_roster(key)
         lenders = lenders_for(key)
-        for family in ("tree", "blind"):
-            specs = tuple(u.spec for c in lenders
-                          for u in (Unit(f"lender_{family}", key, c),) if todo(u))
-            if specs:
-                jobs.append(Job(f"lender_{family}:{key}", specs, LGB_THREADS,
-                                MEM["lender"]))
+        specs = tuple(u.spec for c in lenders
+                      for u in (Unit("lender_tree", key, c),) if todo(u))
+        if specs:
+            jobs.append(Job(f"lender_tree:{key}", specs, LGB_THREADS,
+                            MEM["lender"]))
         if gate_run(done, done1, key) is None:
             jobs.append(Job(f"gnn_identity_gate:{key}",
                             (f"gnn_identity_gate:{key}",), GNN_THREADS,
                             MEM["gate"]))
         banks = list(roster.index)
         weights = [float(w) for w in roster["touching"]]
-        tree_deps = (f"lender_tree:{key}", f"lender_blind:{key}")
         for i, lot in enumerate(exp1._split_lots(banks, weights,
                                                LOTS["transfer_tree"])):
             specs = tuple(u.spec for b in lot
-                          for u in (Unit("transfer_tree", key, b),
-                                    Unit("transfer_blind", key, b)) if todo(u))
+                          for u in (Unit("transfer_tree", key, b),) if todo(u))
             if specs:
                 jobs.append(Job(f"transfer_tree:{key}:lot{i}", specs,
-                                LGB_THREADS, MEM["transfer_tree"], tree_deps))
+                                LGB_THREADS, MEM["transfer_tree"],
+                                (f"lender_tree:{key}",)))
         for i, lot in enumerate(exp1._split_lots(banks, weights,
                                                LOTS["transfer_gnn"])):
             specs = tuple(u.spec for b in lot
@@ -883,7 +833,7 @@ def cmd_launch(budget: int, machine_gb: float, poll: int) -> int:
     signal.signal(signal.SIGINT, on_signal)
     started = time.time()
     print(f"launch: budget {budget} threads, machine {machine_gb} GB, root "
-          f"{experiments_root()}, smoke {SMOKE}; logs in {LOG_DIR}", flush=True)
+          f"{experiments_root()}; logs in {LOG_DIR}", flush=True)
     idle_polls = 0
     try:
         while True:

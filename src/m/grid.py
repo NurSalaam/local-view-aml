@@ -1,7 +1,7 @@
-"""The tree family's frozen tuning budget: eight LightGBM settings, each
-trained with early stopping on the validation split. Every tree model in
-every set-up gets this same grid, so differences between set-ups are not
-differences in tuning effort."""
+"""The tree family's eight configurations, each trained with early stopping
+on the validation window. Every tree model in every scenario gets the same
+eight, so differences between scenarios are not differences in tuning
+effort."""
 
 GRID = (
     {"num_leaves": 64, "learning_rate": 0.05, "scale_pos_weight": 1},
