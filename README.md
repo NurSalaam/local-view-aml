@@ -283,17 +283,26 @@ Each row names the scripts that write the Runs a section reads, and the
 A few quoted values are read directly from a named artefact rather than
 computed by a facts block: the fit times on HI-Medium and its counts of
 training-window payments and copies (the `seconds` and `rows` of Experiment
-1's `gnn_global` and `tree_global` Runs on HI-Medium); banks 0272142 and
-008904, and the shortfalls and error bars of banks 0143079 and 0293268
-(Experiment 1's `shortfall` Run on HI-Medium in the tree family, its
+1's `gnn_global` and `tree_global` Runs on HI-Medium; the time for one
+configuration of the tree family is the `tree_global` Run's `seconds.total`
+over its eight configurations); the AMLgentex dataset's own fields that vary
+(its feature table, `data/interim/features/sweden_100K_easy_global.parquet`);
+banks 0272142 and 008904, and the shortfalls and error bars of banks 0143079
+and 0293268 (Experiment 1's `shortfall` Run on HI-Medium in the tree family, its
 `banks.csv` and `roster.csv`); bank 0143079's scores of 0.140 and 0.957
 (Experiment 2's `components` Run in the tree family, `banks.csv`); bank 020's
 scores at each level of the case reduction (Experiment 2's `dial` Runs, their
 `banks` block); the boundary share of exactly 1 at 51 banks (the `descriptors`
 Run of HI-Medium, `descriptors.csv`); the ten values of the scale rule's
 out-of-fold ρ (the `selection` Runs, `candidates.csv`, `score_r0` to
-`score_r9`); and the HI-Small lenders left out of the GNN family's choice (the
-`excluded` block of Experiment 4's `transfer_gnn` Runs on HI-Small).
+`score_r9`); and the HI-Small lenders left out of the GNN family's choice and
+the currencies their ledgers lack (the `excluded` block of Experiment 4's
+`transfer_gnn` Runs on HI-Small, whose `lender_n_codes` give how many codes,
+in the dataset's alphabetical order, each lender's detector embeds for the
+payment format and the two currencies). The values quoted from the
+sources are not computed here: the sizes of AMLworld's two Large datasets
+(Altman et al., 2024), the twelve datasets AMLgentex releases
+(`huggingface.co/AMLGentex`) and the published scores of Ch. 3 §3.4.
 
 ## Facts
 

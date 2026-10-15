@@ -641,9 +641,9 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
              "(ledger, own) differ")
 
     boot = four_cell_bootstrap(cell["n_test"], groups, sides)
-    components = component_estimates(boot, family)
+    path1_est = component_estimates(boot, family)
     second = combination_estimates(boot, family, combos)
-    est = {g: components[g] | second[g] for g in labels}
+    est = {g: path1_est[g] | second[g] for g in labels}
     t_boot = time.time() - t0
 
     rng = np.random.default_rng(SEED)
