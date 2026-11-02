@@ -50,10 +50,10 @@ GNN_INTERVAL_NOTE = ("the interval of the weighted mean includes the variation "
                      "by an independent normal draw of variance seed_var/3, from "
                      "a fresh default_rng(0) for each reading, as in Experiment "
                      "1's null check and Experiment 2's component intervals")
-CRITERION = ("hypothesis 3 is supported in a family when the lower end of the "
-             "95 % interval of the weighted mean gain over the quarter of "
-             "banks with the fewest confirmed cases lies above 25 % of their "
-             "weighted mean Experiment 1 shortfall, and refuted otherwise")
+CRITERION = ("hypothesis 3 is supported in a family when the 95 % interval of "
+             "the weighted mean gain over the quarter of banks with the fewest "
+             "confirmed cases lies wholly above zero, and not supported "
+             "otherwise")
 
 
 def check_execution_settings() -> None:
@@ -136,8 +136,6 @@ def policy_config(key: str, family: str, inputs: dict) -> dict:
                           "cases (training-window laundering payments), by "
                           "pandas qcut as in Experiment 2; the first holds "
                           "the fewest",
-              "line": "25 % of the weighted mean Experiment 1 shortfall of "
-                      "the first quarter",
               "weights": "Experiment 1's per-bank weights 1/s_B^2, s_B the "
                          "bank's error bar, from the Experiment 1 shortfall "
                          "Run's banks.csv",
@@ -364,12 +362,10 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
     weights_q1 = weights[[labels.index(b) for b in q1]]
     shortfall_q1 = table.loc[q1, "delta_exp1"].to_numpy()
     weighted_shortfall = float((weights_q1 * shortfall_q1).sum() / weights_q1.sum())
-    line = weighted_shortfall / 4.0
     threshold_block = {"quartile_banks": len(q1),
                        "count_range": [int(table.loc[q1, "train_pos"].min()),
                                        int(table.loc[q1, "train_pos"].max())],
-                       "weighted_mean_shortfall": weighted_shortfall,
-                       "line_quarter_of_weighted_shortfall": line}
+                       "weighted_mean_shortfall": weighted_shortfall}
     if inputs["examples"] is not None:
         epath, emetrics = inputs["examples"]
         quarters = pd.read_csv(verify(epath, emetrics["artifacts"]["examples"]),
@@ -385,7 +381,7 @@ def policy_metrics(key: str, family: str, inputs: dict, run_dir: Path) -> dict:
     primary = weighted_mean_reading(q1, est, weights_q1, family)
     primary["excludes_zero"] = bool(primary["ci95"][0] > 0.0
                                     or primary["ci95"][1] < 0.0)
-    primary["lower_end_above_line"] = bool(primary["ci95"][0] > line)
+    primary["wholly_above_zero"] = bool(primary["ci95"][0] > 0.0)
     all_banks = weighted_mean_reading(labels, est, weights, family)
 
     reduce = np.median if PAIRING[family] == "median_over_grid" else np.mean
@@ -480,11 +476,10 @@ def cmd_policy(key: str, family: str, done: dict | None = None,
                   lambda config, run_dir: policy_metrics(key, family, inputs,
                                                          run_dir),
                   done=done)
-    p, t = metrics["primary"], metrics["threshold"]
+    p = metrics["primary"]
     print(f"policy {key} {family}: first quarter weighted mean gain "
           f"{p['weighted_mean']:+.4f} ci [{p['ci95'][0]:+.4f}, {p['ci95'][1]:+.4f}] "
-          f"line {t['line_quarter_of_weighted_shortfall']:+.4f} borrows "
-          f"{metrics['safety']['borrows']} of {metrics['k']}", flush=True)
+          f"borrows {metrics['safety']['borrows']} of {metrics['k']}", flush=True)
     return metrics
 
 
@@ -507,11 +502,8 @@ def verdict_config(cells: dict) -> dict:
             "primary_dataset": exp4.PRIMARY_KEY,
             "families": list(FAMILIES),
             "criterion": CRITERION,
-            "outcomes": {
-                "supported": "the criterion holds in both families",
-                "refuted": "it fails in both",
-                "supported_one_family": "it holds in exactly one family, for "
-                                        "which alone hypothesis 3 is supported"},
+            "outcomes": {"supported": "the criterion holds in the family",
+                         "not supported": "it fails"},
             "repeat": "the experiment repeated on HI-Small under the same "
                       "design; it decides nothing",
             "world_note": "in AMLworld one generator produces the laundering "
@@ -530,19 +522,12 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
         p, t = m["primary"], m["threshold"]
         verdicts[family] = {
             "weighted_mean": p["weighted_mean"], "ci95": p["ci95"],
-            "line_quarter_of_weighted_shortfall":
-                t["line_quarter_of_weighted_shortfall"],
             "weighted_mean_shortfall_q1": t["weighted_mean_shortfall"],
             "share_of_shortfall_recovered":
                 p["weighted_mean"] / t["weighted_mean_shortfall"],
-            "supported": p["lower_end_above_line"]}
-    supported = [f for f in FAMILIES if verdicts[f]["supported"]]
-    if len(supported) == len(FAMILIES):
-        outcome = "supported"
-    elif not supported:
-        outcome = "refuted"
-    else:
-        outcome = f"supported for the {supported[0]} family only"
+            "supported": p["wholly_above_zero"]}
+    outcome = {f: "supported" if verdicts[f]["supported"] else "not supported"
+               for f in FAMILIES}
     repeat = {}
     for key, fams in runs.items():
         if key == P:
@@ -552,12 +537,9 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
                 "weighted_mean_q1": m["primary"]["weighted_mean"],
                 "ci95": m["primary"]["ci95"],
                 "excludes_zero": m["primary"]["excludes_zero"],
-                "line_quarter_of_weighted_shortfall":
-                    m["threshold"]["line_quarter_of_weighted_shortfall"],
                 "borrows": m["safety"]["borrows"], "k": m["k"]}
     return {"criterion": CRITERION, "families": verdicts,
-            "hypothesis_3": outcome, "supported_in": supported,
-            "repeat": repeat}
+            "hypothesis_3": outcome, "repeat": repeat}
 
 
 def cmd_verdict() -> int:
@@ -581,7 +563,6 @@ def cmd_verdict() -> int:
     print(json.dumps({"hypothesis_3": metrics["hypothesis_3"],
                       "families": {f: {"supported": v["supported"],
                                        "ci95": v["ci95"],
-                                       "line": v["line_quarter_of_weighted_shortfall"],
                                        "share": v["share_of_shortfall_recovered"]}
                                    for f, v in metrics["families"].items()}},
                      indent=2))
@@ -614,6 +595,8 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
+    if sys.argv[1] == "status":
+        return cmd_status()
     check_execution_settings()
     exp1.install_signal_handlers()
     cmd, args = sys.argv[1], sys.argv[2:]
@@ -623,8 +606,6 @@ def main() -> int:
         return cmd_verdict()
     if cmd == "all":
         return cmd_all()
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

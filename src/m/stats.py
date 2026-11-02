@@ -3,7 +3,7 @@
 The joint bootstrap resamples the whole test window with replacement and
 recomputes every group's shortfall from the same resample — never
 group-by-group — so the dependence induced by shared cross-group payments is
-carried into every statistic. Heterogeneity is Cochran's Q with the I-squared
+carried into every statistic. Heterogeneity is the statistic Q with the I-squared
 transform; its assumption-free null centres each bootstrap replicate on the
 point shortfall, one common shortfall with the empirical joint dependence
 kept.
@@ -150,7 +150,7 @@ def aggregate_shortfalls(boot: dict, metric: str, aggregate: str) -> dict:
 
 
 def heterogeneity(deltas: np.ndarray, ses: np.ndarray) -> dict:
-    """Cochran's Q and I-squared; groups with an error bar of zero are
+    """The statistic Q and the share I-squared; groups with an error bar of zero are
     excluded rather than given infinite weight."""
     usable = ses > 0
     d, s = deltas[usable], ses[usable]
@@ -163,25 +163,31 @@ def heterogeneity(deltas: np.ndarray, ses: np.ndarray) -> dict:
             "excluded_degenerate": int((~usable).sum())}
 
 
-def null_q_check(delta_reps: np.ndarray, deltas: np.ndarray, ses: np.ndarray,
-                 seed_var: np.ndarray | None = None, *, seed: int = 0,
-                 level: float = 0.95) -> dict:
-    """The assumption-free null for Q: every replicate's shortfalls centred
-    on their point values (one common shortfall, the empirical joint
-    dependence kept), plus an independent normal seed-noise draw of variance
-    ``seed_var / 3`` per group when given; the check passes when the observed
-    Q exceeds the null's ``level`` quantile. ``delta_reps`` is (replicates,
-    groups)."""
+def null_q_replicates(delta_reps: np.ndarray, deltas: np.ndarray, ses: np.ndarray,
+                      seed_var: np.ndarray | None = None, *,
+                      seed: int = 0) -> np.ndarray:
+    """Q on every centred replicate: each replicate's shortfalls centred on
+    their point values (one common shortfall, the empirical joint dependence
+    kept), plus an independent normal seed-noise draw of variance
+    ``seed_var / 3`` per group when given. Replicates holding a non-finite
+    shortfall are dropped. ``delta_reps`` is (replicates, groups)."""
     usable = ses > 0
     reps = delta_reps[:, usable] - deltas[usable][None, :]
     if seed_var is not None:
         rng = np.random.default_rng(seed)
         reps = reps + rng.standard_normal(reps.shape) * np.sqrt(seed_var[usable] / 3.0)[None, :]
     w = 1.0 / ses[usable] ** 2
-    finite = np.all(np.isfinite(reps), axis=1)
-    reps = reps[finite]
+    reps = reps[np.all(np.isfinite(reps), axis=1)]
     means = (reps * w).sum(axis=1) / w.sum()
-    q_null = ((reps - means[:, None]) ** 2 * w).sum(axis=1)
+    return ((reps - means[:, None]) ** 2 * w).sum(axis=1)
+
+
+def null_q_check(delta_reps: np.ndarray, deltas: np.ndarray, ses: np.ndarray,
+                 seed_var: np.ndarray | None = None, *, seed: int = 0,
+                 level: float = 0.95) -> dict:
+    """The assumption-free null for Q (:func:`null_q_replicates`); the check
+    passes when the observed Q exceeds the null's ``level`` quantile."""
+    q_null = null_q_replicates(delta_reps, deltas, ses, seed_var, seed=seed)
     observed = heterogeneity(deltas, ses)["Q"]
     q95 = float(np.quantile(q_null, level))
     return {"observed_Q": observed, "null_q95": q95,
@@ -200,6 +206,48 @@ def leave_one_out(labels: list[str], deltas: np.ndarray, ses: np.ndarray) -> dic
     het = heterogeneity(deltas[keep], ses[keep])
     return {"dropped": labels[drop], "dropped_weight_share":
             float(weights[drop] / weights.sum()), **het}
+
+
+def tau_reading(deltas: np.ndarray, ses: np.ndarray) -> dict:
+    """tau, the estimated standard deviation of the true shortfalls, and its
+    two terms: the excess Q - (k - 1) and the weight term
+    sum w - sum w^2 / sum w, with w = 1/s^2; tau^2 is their ratio, floored
+    at zero."""
+    w = 1.0 / ses ** 2
+    excess = heterogeneity(deltas, ses)["Q"] - (len(deltas) - 1)
+    weight_term = float(w.sum() - (w ** 2).sum() / w.sum())
+    return {"excess": float(excess), "weight_term": weight_term,
+            "tau": float(np.sqrt(max(0.0, excess / weight_term)))}
+
+
+def leave_each_out(labels: list[str], deltas: np.ndarray, ses: np.ndarray,
+                   delta_reps: np.ndarray | None = None,
+                   seed_var: np.ndarray | None = None) -> dict:
+    """Q, I-squared and tau with each group removed in turn, beside each
+    group's share of the weight and of Q on the full set. With replicates,
+    each removal also carries the null check of :func:`null_q_check` on the
+    kept columns (seed noise drawn afresh at seed 0 per removal)."""
+    k = len(deltas)
+    w = 1.0 / ses ** 2
+    full = heterogeneity(deltas, ses)
+    terms = w * (deltas - full["weighted_mean"]) ** 2
+    removals = []
+    for i in range(k):
+        keep = np.arange(k) != i
+        het = heterogeneity(deltas[keep], ses[keep])
+        row = {"bank": labels[i], "weight_share": float(w[i] / w.sum()),
+               "q_share": float(terms[i] / full["Q"]), "Q": het["Q"],
+               "I2": het["I2"], "tau": tau_reading(deltas[keep], ses[keep])["tau"]}
+        if delta_reps is not None:
+            null = null_q_check(delta_reps[:, keep], deltas[keep], ses[keep],
+                                None if seed_var is None else seed_var[keep])
+            row |= {"null_q95": null["null_q95"], "exceedance": null["exceedance"],
+                    "passes": null["passes"]}
+        removals.append(row)
+    lowest = min(removals, key=lambda r: r["I2"])
+    return {"full": {**full, **tau_reading(deltas, ses)},
+            "min_I2": lowest["I2"], "min_bank": lowest["bank"],
+            "removals": removals}
 
 
 def spearman(a: np.ndarray, b: np.ndarray) -> float:

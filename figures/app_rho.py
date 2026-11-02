@@ -4,7 +4,7 @@ Data: Experiment 1, the `shortfall` checks on HI-Medium for the tree
 and GNN families. Each bank is placed at its rank by the tree family's
 shortfall (`delta` in `banks.csv`) and its rank by the GNN family's; rank 1
 is the largest shortfall. The rank correlation printed in the panel is the
-one the verdict Run recorded (`criteria.2.rho` of the `verdict` check); the
+one the verdict Run recorded (`agreement.rho` of the `verdict` check); the
 script asserts that it reproduces from the two `banks.csv` files.
 """
 import json
@@ -41,7 +41,7 @@ def banks_of(family):
 tree, gnn = banks_of("tree"), banks_of("gnn")
 assert list(tree.index) == list(gnn.index)
 verdict = find(RUNS, check="verdict")
-rho = json.loads((verdict / "metrics.json").read_text())["criteria"]["2"]["rho"]
+rho = json.loads((verdict / "metrics.json").read_text())["agreement"]["rho"]
 recomputed = spearmanr(tree["delta"], gnn["delta"]).statistic
 assert abs(rho - recomputed) < 1e-9, (rho, recomputed)
 
@@ -59,8 +59,8 @@ ax.set_xlim(0, k + 1)
 ax.set_ylim(0, k + 1)
 ax.set_xticks([1, 25, 50, 75, 100])
 ax.set_yticks([1, 25, 50, 75, 100])
-ax.set_xlabel("Rank by the tree family's shortfall", fontsize=10, color=INK)
-ax.set_ylabel("Rank by the GNN family's shortfall", fontsize=10, color=INK)
+ax.set_xlabel("Rank by the shortfall in the tree family", fontsize=10, color=INK)
+ax.set_ylabel("Rank by the shortfall in the GNN family", fontsize=10, color=INK)
 ax.tick_params(labelsize=9.6, colors=INK, length=3)
 ax.set_aspect("equal")
 for side in ("top", "right"):

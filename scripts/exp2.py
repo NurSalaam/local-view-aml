@@ -831,7 +831,7 @@ def dial_units(key: str, family: str) -> list[Unit]:
 def plan_jobs(done: dict, exclude: frozenset[str] = frozenset()) -> list[Job]:
     """Launch order: the GNN family's (network, qualifying) (longest), its
     (ledger, qualifying), its copy-weighted (network, qualifying), the tree
-    cells, the blind tree, then the
+    cells, the payment-only tree, then the
     case reduction; the own-pool network-sight cell last, its tree and
     blind units in lots of banks, its GNN units in lots of banks with the
     three seeds together."""

@@ -390,6 +390,8 @@ def main() -> int:
         print(__doc__)
         return 2
     cmd, args = sys.argv[1], sys.argv[2:]
+    if cmd == "status":
+        return cmd_status()
     check_execution_settings()
     if cmd == "plan":
         units = plan(args[0], done_index())
@@ -408,8 +410,6 @@ def main() -> int:
         print(json.dumps({k: metrics[k] for k in ("winner", "finalists", "tie_break",
                                                   "configuration")}, indent=2))
         return 0
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

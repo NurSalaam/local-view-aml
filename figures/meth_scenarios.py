@@ -166,16 +166,16 @@ for position, sight, pool, title, footnote, bordered in layout:
 
 figure.text(0.538, 0.1107, r"Sight $S$: the payments from which features and messages are computed",
             ha="center", fontsize=10, color=INK)
-figure.text(0.3373, 0.1432, f"Bank {FOCAL}'s ledger", ha="center", fontsize=10, color=MUTED)
+figure.text(0.3373, 0.1432, f"Ledger of bank {FOCAL}", ha="center", fontsize=10, color=MUTED)
 figure.text(0.7386, 0.1432, "The whole network", ha="center", fontsize=10, color=MUTED)
 figure.text(0.0836, 0.5826, r"Training pool $P$: whose confirmed cases the detector learns from",
             va="center", rotation=90, ha="center", fontsize=10, color=INK)
-figure.text(0.1195, 0.7925, "Every bank's", va="center", rotation=90, ha="center", fontsize=10, color=MUTED)
-figure.text(0.1195, 0.3727, f"Bank {FOCAL}'s own", va="center", rotation=90, ha="center", fontsize=10, color=MUTED)
+figure.text(0.1195, 0.7925, "Every bank", va="center", rotation=90, ha="center", fontsize=10, color=MUTED)
+figure.text(0.1195, 0.3727, f"Bank {FOCAL} alone", va="center", rotation=90, ha="center", fontsize=10, color=MUTED)
 figure.legend(handles=[
-    Line2D([], [], color=SEEN, lw=2.0, label="Payment within the detector's sight"),
-    Line2D([], [], color=UNSEEN, lw=1.0, ls=(0, (1.5, 1.8)), label="Payment outside its sight"),
-    Line2D([], [], color=LAUNDERING, lw=2.0, label="Laundering payment"),
+    Line2D([], [], color=LAUNDERING, lw=2.0, label="Laundering payment in sight"),
+    Line2D([], [], color=SEEN, lw=2.0, label="Normal payment in sight"),
+    Line2D([], [], color=UNSEEN, lw=1.0, ls=(0, (1.5, 1.8)), label="Payment outside sight"),
     Patch(facecolor=POOL_FILL, edgecolor=RULE, label="Bank whose confirmed cases are in the pool"),
     Line2D([], [], marker="o", color="none", markerfacecolor=INK, markeredgecolor=INK,
            markersize=5.5, label=f"Account at bank {FOCAL}"),

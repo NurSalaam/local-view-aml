@@ -2,8 +2,9 @@
 
 Every statistic here is a function of ranks, so units and freak banks cannot
 dominate, and taking logs changes nothing. Experiment 2 correlates confirmed
-cases with the shortfall, size held fixed; Experiment 3 scores the rules by
-the rank correlation of their out-of-fold predictions with the shortfall.
+cases with the shortfall, size held fixed; Experiment 3 scores the regression
+models by the rank correlation of their out-of-fold predictions with the
+shortfall.
 
 Data. Every function takes parallel one-dimensional arrays over banks — one
 value per bank, in one shared bank order — and returns plain floats or a small

@@ -12,9 +12,7 @@ Re-running is idempotent: a file already present that matches its pinned
 digest is left untouched; anything missing or mismatched is (re)fetched and
 verified.
 
-Each named set (e.g. ``HI-Small``) is its payments file, ``*_Trans.csv``;
-HI-Medium adds ``HI-Medium_Patterns.txt``, the record of injected typologies
-that Experiment 3 reads.
+Each named set (e.g. ``HI-Small``) is its payments file, ``*_Trans.csv``.
 
 Usage
 -----
@@ -44,8 +42,6 @@ EXPECTED: dict[str, tuple[str, int]] = {
                            650_422_357),
     "HI-Medium_Trans.csv": ("3126afb8155e7c8815d62bc5370549a7b5ae6bf7dfe872b3cd7813e66a3d7ff5",
                             3_031_783_420),
-    "HI-Medium_Patterns.txt": ("d612cd7ed6f7761c0e36f3b788dfbae68aa0842c77145b192c777c22daba5c9f",
-                               2_279_574),
     "LI-Medium_Trans.csv": ("0fc89584453c97472b1bfde7ca746e21d7167140c22a6c4875272b197a4a3910",
                             2_976_436_978),
 }

@@ -1,21 +1,20 @@
-"""The out-of-fold rank correlation of the sixteen rules on properties and of the rule on
-scale and confirmed cases on HI-Medium, for Chapter 5.
+"""The difference between the out-of-fold rank correlation of each of the fifteen
+label-free regression models and that of the scale model on HI-Medium, for Chapter 5.
 
-Data: Experiment 3. The `selection` Runs give the sixteen rules on label-free
-properties per family (`candidates.csv`: `score`, the mean over ten repeats of
-the out-of-fold Spearman correlation, and `paired_q05_vs_baseline`, the 5th
-percentile of the paired bank-redraw difference from the scale rule). The
-`ceiling` Runs give the scale rule and the nine rules that use labels the same
-way (`score`, `q05_vs_baseline`). The scale rule appears in both sets with the
-same score, which the script asserts, and is drawn once. A rule is drawn
-filled when its paired 5th percentile exceeds zero.
+Data: Experiment 3, the `uncertainty` check of `scripts/exp3_readings.py`, which
+reproduces the recorded `selection` Runs' models. Per family and model, `delta` is the
+difference of the mean over ten repeats of the out-of-fold Spearman correlation
+from that of the scale model, and `q05` and `q95` are the 5th and 95th
+percentiles of that difference over 1,000 paired redraws of the 107 banks, the
+out-of-fold predictions held as recorded. A point marks the difference and a
+bar runs from the 5th to the 95th percentile; the vertical line marks no
+difference.
 """
+import json
 from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import pandas as pd
-from matplotlib.lines import Line2D
 
 from m.runlog import find, index
 
@@ -29,17 +28,18 @@ mpl.rcParams.update({
     "pdf.fonttype": 42,
 })
 
-INK, MUTED, RULE = "#1c1c1c", "#6b6b6b", "#d7d3cb"
-BLUE, RED = "#2a5d9f", "#c2352c"
+INK, MUTED = "#1c1c1c", "#6b6b6b"
+BLUE = "#2a5d9f"
 FAMILIES = (("tree", "(a) Tree family"), ("gnn", "(b) GNN family"))
 
-LABEL_FREE = {
-    "scale": "Scale",
+GROUPS = {
     "openness": "Openness",
     "knowledge": "Counterparty knowledge",
     "spread": "Banks of the counterparties",
     "structure": "Internal structure",
     "mix": "Mix",
+}
+ADDED = {
     "scale+internal_share": "Scale + internal share",
     "scale+boundary_share": "Scale + boundary share",
     "scale+external_recurrence": "Scale + recurring counterparties",
@@ -51,74 +51,45 @@ LABEL_FREE = {
     "scale+format_entropy": "Scale + format entropy",
     "scale+currency_entropy": "Scale + currency entropy",
 }
-LABEL_USING = {
-    "scale+laundering_count": "Scale + confirmed cases",
-}
+MODELS = {**GROUPS, **ADDED}
 
 
+run = find(index("exp3"), check="uncertainty", dataset_key="HI-Medium")
+metrics = json.loads((run / "metrics.json").read_text())
+cells = {family: [(MODELS[m], metrics[family]["banks"][m]["delta"],
+                   metrics[family]["banks"][m]["q05"], metrics[family]["banks"][m]["q95"])
+                  for m in MODELS]
+         for family, _ in FAMILIES}
 
-def rows(family):
-    free_dir = find(index("exp3"), check="selection", dataset_key="HI-Medium", family=family)
-    using_dir = find(index("exp3"), check="ceiling", dataset_key="HI-Medium", family=family)
-    free = pd.read_csv(free_dir / "artifacts" / "candidates.csv").set_index("candidate")
-    using = pd.read_csv(using_dir / "artifacts" / "candidates.csv").set_index("candidate")
-    assert abs(free.loc["scale", "score"] - using.loc["scale", "score"]) < 1e-12
-    out = [(LABEL_FREE[c], free.loc[c, "score"], free.loc[c, "paired_q05_vs_baseline"] > 0,
-            "free") for c in LABEL_FREE]
-    out += [(LABEL_USING[c], using.loc[c, "score"], using.loc[c, "q05_vs_baseline"] > 0,
-             "using") for c in LABEL_USING]
-    return free_dir.name, using_dir.name, out, free.loc["scale", "score"]
-
-
-cells = {family: rows(family) for family, _ in FAMILIES}
-n = len(LABEL_FREE) + len(LABEL_USING)
 gap = 0.8
-positions = [i if i < len(LABEL_FREE) else i + gap for i in range(n)]
+positions = [i if i < len(GROUPS) else i + gap for i in range(len(MODELS))]
 
-figure, axes = plt.subplots(1, 2, figsize=(6.3, 4.8), sharey=True,
-                            gridspec_kw=dict(left=0.35, right=0.985, bottom=0.19,
-                                             top=0.955, wspace=0.08))
+figure, axes = plt.subplots(1, 2, figsize=(6.3, 4.4), sharey=True,
+                            gridspec_kw=dict(left=0.35, right=0.985, bottom=0.12,
+                                             top=0.95, wspace=0.08))
 for ax, (family, title) in zip(axes, FAMILIES):
-    _, _, entries, scale = cells[family]
-    ax.axvline(scale, color=MUTED, lw=0.8, ls="--", zorder=1)
-    ax.axvline(0, color=RULE, lw=0.6, zorder=0)
-    for y, (_, score, beats, kind) in zip(positions, entries):
-        colour = BLUE if kind == "free" else RED
-        ax.plot([0, score], [y, y], color=RULE, lw=0.6, zorder=1)
-        ax.scatter(score, y, s=22, zorder=3, edgecolor=colour, lw=0.9,
-                   facecolor=colour if beats else "white",
-                   marker="o" if kind == "free" else "D")
+    ax.axvline(0, color=INK, lw=0.7, zorder=1)
+    for y, (_, delta, q05, q95) in zip(positions, cells[family]):
+        ax.plot([q05, q95], [y, y], color=BLUE, lw=1.2, solid_capstyle="butt", zorder=2)
+        ax.scatter(delta, y, s=16, color=BLUE, zorder=3)
     ax.set_title(title, fontsize=10, color=INK, loc="left")
-    ax.set_xlim(-0.12, 0.95)
+    ax.set_xlim(-0.95, 0.15)
     ax.xaxis.set_major_locator(mpl.ticker.MultipleLocator(0.2))
     ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(
-        lambda v, _: f"{v:.1f}".replace("-", "−")))
+        lambda v, _: "0" if abs(v) < 1e-9 else f"{v:+.1f}".replace("-", "−")))
     ax.tick_params(labelsize=10, color=MUTED, length=3)
     ax.tick_params(axis="y", length=0)
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(MUTED)
     ax.spines["bottom"].set_linewidth(0.6)
-    ax.set_xlabel("Out-of-fold ρ", fontsize=10, color=INK)
+    ax.set_xlabel("Difference in out-of-fold ρ\nfrom the scale model", fontsize=10, color=INK)
 axes[0].set_yticks(positions)
-axes[0].set_yticklabels([name for name, *_ in cells["tree"][2]])
+axes[0].set_yticklabels([name for name, *_ in cells["tree"]])
 axes[0].set_ylim(positions[-1] + 0.8, -0.8)
-for label, y in zip(axes[0].get_yticklabels(), positions):
-    label.set_color(INK if y < len(LABEL_FREE) else RED)
-figure.legend(handles=[
-    Line2D([], [], ls="none", marker="o", markersize=4.5, markerfacecolor="white",
-           markeredgecolor=BLUE, label="Rule on properties"),
-    Line2D([], [], ls="none", marker="D", markersize=4.2, markerfacecolor="white",
-           markeredgecolor=RED, label="Rule on scale and confirmed cases"),
-    Line2D([], [], ls="none", marker="D", markersize=4.2, markerfacecolor=RED,
-           markeredgecolor=RED, label="Filled: Outperforms the scale rule"),
-    Line2D([], [], color=MUTED, lw=0.8, ls="--", label="The scale rule"),
-], loc="lower right", bbox_to_anchor=(0.985, 0.0), ncol=2, fontsize=10, frameon=False,
-    handletextpad=0.3, columnspacing=1.0)
 figure.savefig(OUT)
-print("saved", OUT)
+print("saved", OUT, "from", run.name)
 for family, _ in FAMILIES:
-    free_run, using_run, entries, scale = cells[family]
-    print(f"{family}: selection {free_run}, ceiling {using_run}, scale {scale:.4f}")
-    for name, score, beats, kind in entries:
-        print(f"  {kind:5s} {name:38s} {score:+.4f} {'outperforms' if beats else ''}")
+    print(f"{family}: scale {metrics[family]['scale_score']:.4f}")
+    for name, delta, q05, q95 in cells[family]:
+        print(f"  {name:38s} {delta:+.3f} [{q05:+.3f}, {q95:+.3f}]")

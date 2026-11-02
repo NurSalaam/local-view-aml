@@ -4,10 +4,13 @@
 Analysis only: no model trains. Every number here is computed from recorded
 artefacts; one ``facts`` Run per block holds it, keyed by short names grouped
 by the table, figure or paragraph that quotes it. There is one block per
-experiment the results draw on (Experiments 1, 2 and 4), plus a ``thesis``
-block for the numbers other chapters quote from the censuses and the cached
-data. Per-bank tables, bootstrap replicates and verdict blocks are read from
-their Runs. The qualifying-pool shortfall is re-read from the cells' recorded
+experiment the results draw on (Experiments 1, 2 and 4), a ``detectors``
+block for how the fits of the two families and the payment-only tree stopped,
+which configuration validation selected and what each detector scores at
+(network, all), and a ``thesis`` block for the numbers other chapters quote
+from the policy Runs, the censuses and the cached data. Per-bank tables,
+bootstrap replicates and verdict blocks are read from their Runs. The
+qualifying-pool shortfall is re-read from the cells' recorded
 test scores through Experiment 2's own seeded four-cell draws, since the
 components Runs record each component's median over configurations and a
 median of sums is not a sum of medians. Every config cites its inputs' Run
@@ -17,6 +20,7 @@ All blocks write under experiments/facts.
   uv run python scripts/facts.py exp1
   uv run python scripts/facts.py exp2
   uv run python scripts/facts.py exp4
+  uv run python scripts/facts.py detectors
   uv run python scripts/facts.py thesis
   uv run python scripts/facts.py all
   uv run python scripts/facts.py status
@@ -47,10 +51,10 @@ from exp1_readings import (FAMILIES, PAIRED_FAMILIES, estimate_tau,  # noqa: E40
 from m import completed, run  # noqa: E402
 from m.artifacts import load_array, verify, write_array, write_csv  # noqa: E402
 from m.features import graph_feature_names  # noqa: E402
-from m.rank import spearman  # noqa: E402
+from m.rank import partial_spearman, spearman  # noqa: E402
 from m.runlog import config_hash, find, index  # noqa: E402
 from m.stats import heterogeneity, weighted_average_precision  # noqa: E402
-from m.worlds import amlworld  # noqa: E402
+from m.worlds import amlgentex, amlworld  # noqa: E402
 
 EXPERIMENT = "facts"
 CHECK = "facts"
@@ -67,11 +71,17 @@ TAU = ("tau^2 = max(0, (Q - (k - 1)) / (sum w - sum w^2 / sum w)) with "
        "w = 1/s_B^2 (scripts/exp1_readings.py estimate_tau); about the line on "
        "log size, its counterpart for a weighted line (wls_residual)")
 SPEARMAN = "Spearman rho over banks, average ranks; a log changes nothing"
-THREE_TESTS = ("I2 >= 0.25, the null check (centred joint replicates, plus "
-               "normal seed noise of variance seed_var/3 for the GNN family, "
-               "default_rng(0), 95th percentile) and I2 >= 0.25 without the "
-               "bank of largest weight, by scripts/exp1_analysis.py "
-               "heterogeneity_reading")
+NULL_CHECK = ("the observed Q against the 95th percentile of Q over the "
+              "centred joint replicates, plus normal seed noise of variance "
+              "seed_var/3 for the GNN family, default_rng(0), by "
+              "scripts/exp1_analysis.py heterogeneity_reading")
+RATES = ("over the qualifying banks of HI-Medium: the laundering rate of the "
+         "training window (train_pos / train_rows, roster) and of the test set "
+         "(test_base_rate); Spearman rho of the training-window rate with the "
+         "confirmed cases and with the test-set rate, and the partial rho of "
+         "the shortfall with the training-window rate given the confirmed "
+         "cases (m.rank.partial_spearman)")
+SE_BAND = (30, 39)
 ROSTER = ("per dataset, over its qualifying banks: the payments in a bank's "
           "ledger over all three windows (touching) and its confirmed cases "
           "(train_pos), each as a range; HI-Medium, HI-Small and the two "
@@ -101,15 +111,20 @@ SPLIT = ("each bank's test set split by Experiment 2's never-seen mask (scripts/
          "laundering payment has no AP and the bank leaves that part")
 DROP_VS_SIGHT = ("at each bank of the case reduction, the fall from the full "
                  "count to five confirmed cases beside the bank's value of "
-                 "sight on either path (second-path Run banks.csv): its point "
+                 "sight in either order (second-path Run banks.csv): its point "
                  "value and the upper end of its interval")
+RANGE_WIDTH = ("at each bank of the case reduction, the width of the range "
+               "at the full count (band ceiling minus band floor) and the "
+               "distance of the five-case score below the band floor; median, "
+               "lowest and highest over those banks")
 LEVEL_100 = ("at the banks holding a level of 100: the fall is the "
              "full-count score minus the mean level-100 score; the headroom "
              "is the full-count score minus the band floor; the GNN's "
              "full-count score is its seed-0 solo Run, the case reduction's "
              "seed")
-QUARTILE_COMPONENTS = ("the path-1 value of training examples and value of "
-                       "sight, and their difference, in each quarter of "
+QUARTILE_COMPONENTS = ("the value of training examples and the value of sight "
+                       "with the pool enlarged first, and their difference, "
+                       "in each quarter of "
                        "QUARTILES: Experiment 1-weighted means of the components Run's "
                        "per-bank deltas, intervals from its recorded "
                        "replicates (GNN: seed noise of variance seed_var/3 "
@@ -183,7 +198,7 @@ def tau_terms(deltas: np.ndarray, ses: np.ndarray) -> dict:
             "weighted_sd": np.sqrt(q / w.sum())}
 
 
-def three_tests(reading: dict) -> dict:
+def null_reading(reading: dict) -> dict:
     null, loo = reading["null_check"], reading["leave_one_out"]
     return {"k": reading["k"], "weighted_mean": reading["weighted_mean"],
             "Q": reading["Q"], "I2": reading["I2"],
@@ -191,8 +206,7 @@ def three_tests(reading: dict) -> dict:
             "null_exceed": round(null["exceedance"] * null["null_replicates"]),
             "null_passes": null["passes"],
             "loo_I2": loo["I2"], "loo_dropped": loo["dropped"],
-            "loo_weight_share": loo["dropped_weight_share"],
-            "passes_three_tests": exp1_analysis.passes_three_tests(reading)}
+            "loo_weight_share": loo["dropped_weight_share"]}
 
 
 def interval_counts(deltas: pd.Series, lo: pd.Series, hi: pd.Series) -> dict:
@@ -223,7 +237,8 @@ def exp1_inputs() -> dict:
 def exp1_config(inputs: dict) -> dict:
     return {"experiment": "exp1", "check": CHECK, "dataset_key": KEY,
             "tau": TAU, "spearman": SPEARMAN,
-            "three_tests": THREE_TESTS,
+            "null_check": NULL_CHECK, "rates": RATES,
+            "se_band": list(SE_BAND),
             "controls": CONTROLS, "roster": ROSTER,
             "inputs": {
                 "shortfall": {f"{k}/{f}": _hash_of(p)
@@ -261,6 +276,7 @@ def spread_facts(banks: pd.DataFrame, metrics: dict) -> dict:
             "wholly_above": (lo > 0).sum(), "wholly_below": (hi < 0).sum(),
             "covers_zero": ((lo <= 0) & (hi >= 0)).sum(),
             "se_median": s.median(),
+            "se_median_in_band": s[banks["test_pos"].between(*SE_BAND)].median(),
             "shortfall": extremes(d),
             "q_over_null_q95": primary["Q"] / null["null_q95"],
             "null_exceed": round(null["exceedance"] * null["null_replicates"]),
@@ -269,8 +285,26 @@ def spread_facts(banks: pd.DataFrame, metrics: dict) -> dict:
             "median_over_median_global": d.median() / banks["global_ap"].median()}
 
 
+def rate_facts(banks: pd.DataFrame, roster: pd.DataFrame, tables: dict) -> dict:
+    """Section dis-cost: the laundering rate of the training window, its
+    rank correlations with the confirmed cases and with the rate of the test
+    set, and, with the confirmed cases held fixed, with the shortfall."""
+    rows = roster.loc[banks.index]
+    train_rate = (rows["train_pos"] / rows["train_rows"]).to_numpy(np.float64)
+    cases = rows["train_pos"].to_numpy(np.float64)
+    return {"banks": len(rows), "train_rate_range": span(train_rate),
+            "train_rate_fold": train_rate.max() / train_rate.min(),
+            "rho_train_rate_cases": spearman(train_rate, cases),
+            "rho_train_rate_test_rate": spearman(train_rate,
+                                                 banks["test_base_rate"].to_numpy()),
+            "rho_train_rate_given_cases": {
+                f: partial_spearman(train_rate, t.loc[banks.index, "delta"].to_numpy(),
+                                    cases)["rho"]
+                for f, t in tables.items()}}
+
+
 def per_seed_facts(banks: pd.DataFrame, reps_by_seed: np.ndarray) -> list:
-    """The GNN family's three tests at each seed, as Experiment 1 reads them."""
+    """The GNN family's null check at each seed, as Experiment 1 reads it."""
     labels = list(banks.index)
     out = []
     for s in range(reps_by_seed.shape[2]):
@@ -278,7 +312,7 @@ def per_seed_facts(banks: pd.DataFrame, reps_by_seed: np.ndarray) -> list:
         reps = reps_by_seed[:, :, s]
         se = np.nanstd(reps, axis=0, ddof=1)
         reading = exp1_analysis.heterogeneity_reading(labels, d, se, reps)
-        out.append({"seed": exp1.SEEDS[s], **three_tests(reading)})
+        out.append({"seed": exp1.SEEDS[s], **null_reading(reading)})
     return out
 
 
@@ -306,16 +340,16 @@ def size_facts(banks: pd.DataFrame) -> dict:
 
 
 def controls_facts(runs: dict, tables: dict) -> dict:
-    """Table sf-controls: the three tests and tau on the two controls, tree
+    """Table sf-controls: the null check and tau on the two controls, tree
     and GNN families."""
-    cells = {f"{key}/{f}": three_tests(runs[(key, f)]["primary"])
+    cells = {f"{key}/{f}": null_reading(runs[(key, f)]["primary"])
              | {"tau": estimate_tau(tables[(key, f)]["delta"].to_numpy(),
                                     tables[(key, f)]["se"].to_numpy())}
              for key in data.CONTROLS for f in FAMILIES}
     widest = max(cells, key=lambda c: cells[c]["tau"])
     return {"cells": cells,
-            "passing": sorted(c for c, r in cells.items() if r["passes_three_tests"]),
-            "passing_count": sum(r["passes_three_tests"] for r in cells.values()),
+            "passing": sorted(c for c, r in cells.items() if r["null_passes"]),
+            "passing_count": sum(r["null_passes"] for r in cells.values()),
             "tau_max": {"cell": widest, "value": cells[widest]["tau"]}}
 
 
@@ -364,9 +398,10 @@ def exp1_metrics(inputs: dict, run_dir: Path) -> dict:
            "after_size_line": {f: after_line[f]["tau"] for f in FAMILIES}}
 
     size = {f: size_facts(hm[f]) for f in FAMILIES}
+    rates = rate_facts(hm["tree"], roster, {f: hm[f] for f in FAMILIES})
 
     controls = controls_facts(runs, tables)
-    verdict_passes = {f"{k}/{f}": verdict["criteria"]["3"][k][f]["passes_three_tests"]
+    verdict_passes = {f"{k}/{f}": verdict["controls"][k][f]["null_passes"]
                       for k in data.CONTROLS for f in FAMILIES}
 
     checks = {
@@ -394,7 +429,7 @@ def exp1_metrics(inputs: dict, run_dir: Path) -> dict:
             spread["gnn"]["seed_noise_share_median"]
             - verdict["robustness"][f"{KEY}/gnn"]["seed_noise_share_median"]),
         "controls_passes_disagreeing_with_verdict_run": sum(
-            controls["cells"][c]["passes_three_tests"] != passes
+            controls["cells"][c]["null_passes"] != passes
             for c, passes in verdict_passes.items()),
         "controls_cells_read_by_verdict_run": len(verdict_passes)}
 
@@ -402,7 +437,7 @@ def exp1_metrics(inputs: dict, run_dir: Path) -> dict:
         "dataset_key": KEY, "roster": rosters, "spread": spread,
         "per_seed": per_seed, "tau": tau,
         "readings": {"own_best": selection},
-        "size": size, "controls": controls, "checks": checks,
+        "size": size, "rates": rates, "controls": controls, "checks": checks,
         "seconds": time.time() - t0})
 
 
@@ -449,7 +484,8 @@ def exp2_config(inputs: dict) -> dict:
                             "below and above outside it; the band is the range "
                             "of the bank's score at the full count (tree: eight "
                             "configurations; GNN: three seeds)"),
-            "level_100": LEVEL_100, "drop_vs_sight": DROP_VS_SIGHT, "split": SPLIT,
+            "level_100": LEVEL_100, "drop_vs_sight": DROP_VS_SIGHT,
+            "range_width": RANGE_WIDTH, "split": SPLIT,
             "never_seen": exp2_examples.NEVER_SEEN,
             "quartile_components": QUARTILE_COMPONENTS,
             "inputs": {
@@ -614,7 +650,8 @@ def component_facts(banks: pd.DataFrame, metrics: dict, reps: np.ndarray,
 
 def quartile_components(banks: pd.DataFrame, reps: np.ndarray, family: str,
                         quartile: pd.Series, train_pos: pd.Series) -> list:
-    """The value of training examples and the value of sight (path 1) and
+    """The value of training examples and the value of sight (the pool
+    enlarged first) and
     their difference, by quartile of confirmed cases, one family."""
     order = list(exp2_analysis.COMPONENT_ORDER)
     labels = list(banks.index)
@@ -665,7 +702,7 @@ def bank_facts(banks: pd.DataFrame, bank: str) -> dict:
 
 
 def placebo_facts(clocal: Path, cglobal: Path) -> dict:
-    """The blind tree's two qualifying cells, payment by payment."""
+    """The payment-only tree's two qualifying cells, payment by payment."""
     cl, cg = scores(clocal, "test_scores"), scores(cglobal, "test_scores")
     cl_payment, cg_payment = scores(clocal, "test_payment"), scores(cglobal, "test_payment")
     idx = np.searchsorted(cg_payment, cl_payment)
@@ -723,8 +760,9 @@ def level_100_facts(cells: dict, seed_lowest: pd.Series | None) -> dict:
 
 def reduction_facts(dial: dict, shortfall: pd.DataFrame, family: str,
                     paths: pd.DataFrame) -> dict:
-    """Figure sf-reduction: the case reduction at every level, and the
-    five-case fall beside each bank's value of sight on either path."""
+    """Figure sf-reduction: the case reduction at every level, the range at
+    the full count, and the five-case fall beside each bank's value of sight
+    in either order."""
     banks = dial["banks"]
     levels = {}
     for level in DIAL_LEVELS:
@@ -750,6 +788,9 @@ def reduction_facts(dial: dict, shortfall: pd.DataFrame, family: str,
     draw_ranges = np.array([np.ptp(s["by_level"][lv]["draws"])
                             for s in banks.values() for lv in s["by_level"]])
     full = np.array([s["ap_all"] for s in banks.values()])
+    width = pd.Series({b: s["band_all"][1] - s["band_all"][0] for b, s in banks.items()})
+    below = pd.Series({b: s["band_all"][0] - s["by_level"]["5"]["mean"]
+                       for b, s in banks.items()})
     delta = shortfall.loc[list(banks), "delta"]
     curves = {b: [s["by_level"][str(lv)]["mean"] for lv in DIAL_LEVELS
                   if str(lv) in s["by_level"]] + [s["ap_all"]]
@@ -764,6 +805,8 @@ def reduction_facts(dial: dict, shortfall: pd.DataFrame, family: str,
                                                 for s in banks.values()),
                            "at_band_ceiling": sum(s["ap_all"] == s["band_all"][1]
                                                   for s in banks.values())},
+            "range_width": {"median": width.median(), **extremes(width)},
+            "level5_below_range": {"median": below.median(), **extremes(below)},
             "highest_level5_minus_floor": max(s["by_level"]["5"]["mean"] - s["band_all"][0]
                                               for s in banks.values()),
             "draw_range_median": np.median(draw_ranges),
@@ -932,6 +975,184 @@ def exp4_metrics(inputs: dict, run_dir: Path) -> dict:
                      for f in inputs["policy"]}})
 
 
+# ------------------------------------------------------------ detectors --
+
+DETECTOR_KEYS = ("HI-Small", "HI-Medium", "LI-Small", "LI-Medium", "transxion",
+                 data.AMLGENTEX_DATASET)
+STOPPING = ("GNN family: from each fit's epoch trace, stopped on patience when "
+            "the epochs after the first best reach the patience, best at the "
+            "cap when the last epoch holds the best; tree family: per "
+            "configuration, one tree when best_iteration is 1, the cap when "
+            "best_iteration exceeds num_round - early_stop, best at the cap "
+            "when best_iteration equals num_round")
+SELECTED = ("the configuration of highest validation AP among the eight, "
+            "numbered from 1; at (ledger, own) on HI-Medium, per bank")
+INTERNAL = ("test-window AP at (network, all): the tree family and the "
+            "payment-only tree as median and range over the eight "
+            "configurations, the GNN family as mean and range over its three "
+            "seeds; the laundering rate is the test window's laundering "
+            "payments over its payments")
+MEDIAN_BANK = ("the qualifying bank of HI-Medium at the lower median of "
+               "training-window payments (train_rows), ties by identifier")
+SOFTWARE = ("python", "lightgbm", "torch", "torch_geometric", "numpy",
+            "scikit_learn", "pyarrow", "platform")
+
+
+def detectors_inputs() -> dict:
+    done, runs1, runs2 = completed("exp1"), index("exp1"), index("exp2")
+    network_all = {}
+    for key in DETECTOR_KEYS:
+        cells = {"tree": [exp1.recorded_dir(done, exp1.Unit("tree_global", key))],
+                 "blind": [exp1.recorded_dir(done, exp1.Unit("blind_global", key))],
+                 "gnn": [exp1.recorded_dir(done, exp1.Unit("gnn_global", key, seed=s))
+                         for s in exp1.SEEDS]}
+        missing = [f for f, dirs in cells.items() if None in dirs]
+        if missing:
+            raise SystemExit(f"{key}: no global Run of {missing}")
+        network_all[key] = cells
+    shortfall = {f: find(runs1, check="shortfall", dataset_key=KEY, family=f)
+                 for f in FAMILIES}
+    secondpath = {f: find(runs2, check="secondpath", family=f) for f in FAMILIES}
+    return {"network_all": network_all, "shortfall": shortfall, "secondpath": secondpath,
+            "ledger_own": {f: {b: [runs1[h][0] for h in hs]
+                               for b, hs in _config(p)["inputs"]["solo"].items()}
+                           for f, p in shortfall.items()},
+            "network_own": {f: {b: [runs2[h][0] for h in hs]
+                                for b, hs in _config(p)["inputs"]["nown"].items()}
+                            for f, p in secondpath.items()},
+            "select_gnn": find(index("select_gnn"), check="verdict")}
+
+
+def detectors_config(inputs: dict) -> dict:
+    return {"experiment": "detectors", "check": CHECK, "dataset_key": KEY,
+            "stopping": STOPPING, "selected": SELECTED, "internal": INTERNAL,
+            "median_bank": MEDIAN_BANK, "software": list(SOFTWARE),
+            "inputs": {
+                "network_all": {k: {f: [_hash_of(d) for d in dirs]
+                                    for f, dirs in cells.items()}
+                                for k, cells in inputs["network_all"].items()},
+                "shortfall": {f: _hash_of(p) for f, p in inputs["shortfall"].items()},
+                "secondpath": {f: _hash_of(p) for f, p in inputs["secondpath"].items()},
+                "select_gnn": _hash_of(inputs["select_gnn"])}}
+
+
+def gnn_stopping(path: Path) -> dict:
+    """One GNN fit's stopping, from its trace: the loop keeps the first epoch
+    of highest validation AP and stops once the patience passes without a
+    rise."""
+    metrics, gnn = _metrics(path), _config(path)["gnn"]
+    val = np.array([t["val_ap"] for t in metrics["trace"]])
+    since_best = len(val) - 1 - int(np.argmax(val))
+    return {"epochs": len(val), "best_epoch": int(np.argmax(val)) + 1,
+            "stopped_by_patience": since_best >= gnn["patience"],
+            "best_is_last": since_best == 0,
+            "test_ap": metrics["test_ap"]}
+
+
+def tree_stopping(path: Path) -> pd.DataFrame:
+    """One tree fit's eight configurations: the kept iteration against the
+    round cap, and the validation and test AP."""
+    metrics, config = _metrics(path), _config(path)
+    cap, patience = config["num_round"], config["early_stop"]
+    return pd.DataFrame([{
+        "configuration": c + 1, "best_iteration": s["best_iteration"],
+        "one_tree": s["best_iteration"] == 1,
+        "reached_cap": s["best_iteration"] > cap - patience,
+        "best_at_cap": s["best_iteration"] == cap,
+        "val_ap": s["val_ap"], "test_ap": s["test_ap"]}
+        for c, s in enumerate(metrics["settings"])])
+
+
+def stopping_counts(gnn: list[dict], tree: list[pd.DataFrame]) -> dict:
+    trees = pd.concat(tree)
+    return {"gnn": {"fits": len(gnn),
+                    "stopped_by_patience": sum(g["stopped_by_patience"] for g in gnn),
+                    "best_is_last": sum(g["best_is_last"] for g in gnn)},
+            "tree": {"fits": len(trees), "one_tree": trees["one_tree"].sum(),
+                     "reached_cap": trees["reached_cap"].sum()}}
+
+
+def network_all_facts(cells: dict) -> dict:
+    """One dataset at (network, all): how each fit stopped, the validation AP
+    of each configuration of the tree family and the one selected, and the
+    test AP of each detector beside the laundering rate."""
+    tree = tree_stopping(cells["tree"][0])
+    blind = tree_stopping(cells["blind"][0])
+    gnn = [gnn_stopping(d) for d in cells["gnn"]]
+    metrics = _metrics(cells["tree"][0])
+    gnn_ap = np.array([g["test_ap"] for g in gnn])
+    selected = int(tree["val_ap"].idxmax())
+    return {"laundering_rate": metrics["test_positives"] / metrics["rows"]["test"],
+            "tree_val_ap": tree["val_ap"].tolist(),
+            "tree_selected": selected + 1,
+            "tree_val_ap_spread": np.ptp(tree["val_ap"]),
+            "tree_selected_f1_x100": metrics["test_f1_x100"],
+            "tree_stopping": {
+                "one_tree": tree.loc[tree["one_tree"], "configuration"].tolist(),
+                "reached_cap": tree.loc[tree["reached_cap"], "configuration"].tolist(),
+                "best_at_cap": tree.loc[tree["best_at_cap"], "configuration"].tolist()},
+            "gnn_stopping": gnn,
+            "internal": {
+                "blind": {"median": blind["test_ap"].median(), "range": span(blind["test_ap"])},
+                "tree": {"median": tree["test_ap"].median(), "range": span(tree["test_ap"]),
+                         "one_tree_range": span(tree.loc[tree["one_tree"], "test_ap"])
+                         if tree["one_tree"].any() else None,
+                         "reached_cap_range": span(tree.loc[tree["reached_cap"], "test_ap"])
+                         if tree["reached_cap"].any() else None},
+                "gnn": {"mean": gnn_ap.mean(), "range": span(gnn_ap)}}}
+
+
+def median_bank(roster: pd.DataFrame) -> str:
+    ordered = roster.reset_index().sort_values(["train_rows", "bank"])
+    return ordered["bank"].iloc[(len(ordered) - 1) // 2]
+
+
+def software_facts(paths: list[Path]) -> list:
+    rows = [{k: json.loads((p / "fingerprint.json").read_text()).get(k) for k in SOFTWARE}
+            for p in paths]
+    counts = pd.DataFrame(rows).value_counts(dropna=False).reset_index(name="fits")
+    return counts.astype(object).where(counts.notna(), None).to_dict(orient="records")
+
+
+def detectors_metrics(inputs: dict, run_dir: Path) -> dict:
+    t0 = time.time()
+    per_dataset = {k: network_all_facts(c) for k, c in inputs["network_all"].items()}
+    hm = per_dataset[KEY]
+    bank_level = {}
+    for scenario in ("ledger_own", "network_own"):
+        cells = inputs[scenario]
+        bank_level[scenario] = {
+            "gnn": [gnn_stopping(d) for ds in cells["gnn"].values() for d in ds],
+            "tree": [tree_stopping(ds[0]) for ds in cells["tree"].values()]}
+    hm_global = inputs["network_all"][KEY]
+    stopping = {s: stopping_counts(c["gnn"], c["tree"]) for s, c in bank_level.items()}
+    stopping["network_all"] = stopping_counts(
+        hm["gnn_stopping"], [tree_stopping(hm_global["tree"][0])])
+    others = [g for k, d in per_dataset.items() if k != KEY for g in d["gnn_stopping"]]
+    own_selection = pd.Series([int(t["val_ap"].idxmax()) + 1
+                                for t in bank_level["ledger_own"]["tree"]])
+    screen = _metrics(inputs["select_gnn"])["screen"]
+    roster = frame(inputs["shortfall"]["tree"], "roster")
+    bank = median_bank(roster)
+    fits = ([d for cells in inputs["network_all"].values() for dirs in cells.values()
+             for d in dirs]
+            + [d for s in ("ledger_own", "network_own") for cells in inputs[s].values()
+               for ds in cells.values() for d in ds])
+    return plain({
+        "dataset_key": KEY,
+        "network_all": per_dataset,
+        "stopping": stopping,
+        "global_gnn_other_datasets": {
+            "fits": len(others),
+            "stopped_by_patience": sum(g["stopped_by_patience"] for g in others),
+            "best_is_last": sum(g["best_is_last"] for g in others)},
+        "screen_epochs": {c: v["epochs"] for c, v in screen.items()},
+        "ledger_own_selection": own_selection.value_counts().sort_index().to_dict(),
+        "median_bank": {"bank": bank, "train_rows": roster.loc[bank, "train_rows"]},
+        "software": software_facts(fits),
+        "seconds": time.time() - t0})
+
+
 # --------------------------------------------------------------- thesis --
 
 WEIGHTED = ("Experiment 1's weights 1/s_B^2 from the Experiment 1 shortfall Run the policy Run "
@@ -949,19 +1170,47 @@ SINGLE_LENDER = ("the reading with a single lender: each lender in turn as "
 EVERY_BANK_BORROWS = ("the reading in which every bank borrows: the chosen "
                       "detector borrowed at every bank whatever its own "
                       "detector scores, the policy Run's gain_if_borrowed")
-LINE = ("25 % of the weighted mean Experiment 1 shortfall of the quarter of "
-        "banks holding the fewest confirmed cases, as each policy Run records it")
+QUARTER_INTERVALS = ("the 95 % interval of the weighted mean gain in each "
+                     "quarter and over all banks: 2.5th and 97.5th percentiles "
+                     "over the policy Run's 1,000 replicates; the GNN family "
+                     "adds normal seed noise of variance seed_var/3 from one "
+                     "default_rng(0) stream taken in the order of the quarters, "
+                     "all banks last, each quarter's draw followed by a second "
+                     "draw of the same shape that is not used, the stream the "
+                     "reported intervals were drawn from")
+ARRANGEMENTS = ("weighted mean AP at the quarter holding the fewest confirmed "
+                "cases and over all banks: the own detector (solo_ap), the "
+                "choice (policy_ap), every bank borrows (borrowed_ap), pooled "
+                "examples (clocal_ap), pooled records (Experiment 2 second-path "
+                "nown_ap), the detector with the global view (global_ap), and "
+                "each single lender with the comparison with the own detector")
+WORST_LENDER = ("per bank of the first quarter, the lowest gain over its "
+                "lenders with the comparison with the own detector; weighted "
+                "mean, and the banks it leaves below their own detector")
 CENSUS = ("Table meth-census's laundering rate as one laundering payment in so "
           "many payments, from each census Run's payments and laundering "
           "payments (AMLgentex: the transfers left once the source and sink "
           "rows are dropped)")
 LARGEST = 30
 SIZES = ("touching", "train_rows", "test_rows")
-TYPOLOGY = ("the laundering_count-weighted mean of pattern_match_share over "
-            "the qualifying banks")
-RAIL = ("the rail bank's distinct accounts on either side, its share of all "
-        "payments (either endpoint), and the payments between two of its "
-        "accounts")
+RAIL = ("the rail's distinct accounts on either side, its share of all "
+        "payments and of laundering payments (either endpoint), the payments "
+        "between two of its accounts, the share of its payments it sends to "
+        "another bank and their formats, its payments over those of the "
+        "bank identifier touching the most after it, its laundering payments "
+        "in the test window beside those of the bank with the most after it "
+        "and its rank among them, and its share of the payments and of the "
+        "laundering payments in the test sets of the qualifying banks")
+THRESHOLDS = (10, 20, 30, 50)
+QUALIFYING_SWEEP = ("banks, rail excluded, whose test set holds at least each "
+                    "threshold of laundering payments; at the threshold of "
+                    "thirty, the share of payments and of laundering payments "
+                    "touching a qualifying bank over all windows and in the "
+                    "training window, the training-window over test-window "
+                    "laundering payments pooled over the qualifying banks and "
+                    "over every bank but the rail, and the banks that do not "
+                    "qualify, hold laundering in their test set and hold no "
+                    "confirmed case")
 SHARED = "account strings that occur at two or more banks, either side"
 ALWAYS_ZERO = "graph-derived columns of the global table that are zero on every payment"
 
@@ -982,13 +1231,13 @@ def thesis_inputs() -> dict:
             "roster": runs1[cited["tree"]["shortfall"]][0],
             "facts_exp2": facts2,
             "components": runs2[facts2_inputs["components"]["tree"]][0],
-            "secondpath": runs2[facts2_inputs["secondpath"]["tree"]][0],
+            "secondpath": {f: runs2[facts2_inputs["secondpath"][f]][0]
+                           for f in cells["policy"]},
             "census": {k: find(runs0, check="amlworld_census", dataset=k)
                        for k in amlworld.SETS},
             "transxion_census": find(runs0, check="transxion_census"),
             "amlgentex_census": find(runs0, check="amlgentex_census",
                                      dataset=data.AMLGENTEX_DATASET),
-            "ceiling": find(index("exp3"), check="ceiling_descriptors"),
             "descriptors": find(index("exp3"), check="descriptors",
                                 dataset_key=KEY)}
 
@@ -997,22 +1246,26 @@ def thesis_config(inputs: dict) -> dict:
     return {"experiment": "thesis", "check": CHECK, "dataset_key": KEY,
             "weighted": WEIGHTED,
             "single_lender": SINGLE_LENDER, "every_bank_borrows": EVERY_BANK_BORROWS,
-            "line": LINE, "largest": {"banks": LARGEST, "sizes": list(SIZES)},
-            "census": CENSUS, "typology": TYPOLOGY, "rail": RAIL, "shared": SHARED,
+            "quarter_intervals": QUARTER_INTERVALS, "arrangements": ARRANGEMENTS,
+            "worst_lender": WORST_LENDER,
+            "largest": {"banks": LARGEST, "sizes": list(SIZES)},
+            "census": CENSUS, "rail": RAIL, "shared": SHARED,
+            "qualifying": {"thresholds": list(THRESHOLDS), "rule": QUALIFYING_SWEEP},
             "always_zero": ALWAYS_ZERO,
             "inputs": {
                 "verdict": _hash_of(inputs["verdict"]),
                 "policy": {f: _hash_of(p) for f, p in inputs["policy"].items()},
                 "facts_exp2": _hash_of(inputs["facts_exp2"]),
                 "components_tree": _hash_of(inputs["components"]),
-                "secondpath_tree": _hash_of(inputs["secondpath"]),
+                "secondpath": {f: _hash_of(p) for f, p in inputs["secondpath"].items()},
                 "amlworld_census": {k: _hash_of(p)
                                     for k, p in inputs["census"].items()},
                 "transxion_census": _hash_of(inputs["transxion_census"]),
                 "amlgentex_census": _hash_of(inputs["amlgentex_census"]),
-                "ceiling_descriptors": _hash_of(inputs["ceiling"]),
                 "descriptors": _hash_of(inputs["descriptors"]),
                 "canonical": "data/interim/ibm-aml/canonical",
+                "amlgentex_canonical": f"data/interim/amlgentex/canonical/"
+                                       f"{data.AMLGENTEX_DATASET}.parquet",
                 "global_table": f"data/interim/features/{data.AMLGENTEX_DATASET}_global.parquet"}}
 
 
@@ -1034,11 +1287,13 @@ def solo_test_ap(dirs: list[Path], family: str) -> np.ndarray:
 
 
 def lender_gains(banks: pd.DataFrame, transfer: dict, solo: dict,
-                 family: str) -> tuple[pd.DataFrame, pd.Series]:
-    """Per bank, each candidate's gain if borrowed and whether the
-    comparison with the own detector lets the bank borrow it."""
+                 family: str) -> dict[str, pd.DataFrame]:
+    """Per bank and candidate: the gain if borrowed, whether the comparison
+    with the own detector lets the bank borrow it, and the score with it
+    under that comparison (the candidate's where borrowed, the own detector's
+    otherwise); each reduced over settings as Experiment 4 pairs them."""
     reduce = np.median if exp2_analysis.PAIRING[family] == "median_over_grid" else np.mean
-    gains, borrows = {}, {}
+    gains, borrows, scores_ = {}, {}, {}
     for bank in banks.index:
         tm = _metrics(transfer[bank])
         own_val = reduce(list(tm["own_val_ap"].values()) if family == "gnn"
@@ -1048,24 +1303,35 @@ def lender_gains(banks: pd.DataFrame, transfer: dict, solo: dict,
                        for c, v in tm["per_candidate"].items()}
         borrows[bank] = {c: reduce(v["val_ap"]) > own_val
                          for c, v in tm["per_candidate"].items()}
-    return (pd.DataFrame.from_dict(gains, orient="index"),
-            pd.DataFrame.from_dict(borrows, orient="index").fillna(False).astype(bool))
+        scores_[bank] = {c: reduce(v["test_ap"]) if borrows[bank][c] else reduce(own_test)
+                         for c, v in tm["per_candidate"].items()}
+    return {"gains": pd.DataFrame.from_dict(gains, orient="index"),
+            "borrows": pd.DataFrame.from_dict(borrows, orient="index")
+            .fillna(False).astype(bool),
+            "scores": pd.DataFrame.from_dict(scores_, orient="index")}
 
 
-def single_lender_facts(banks: pd.DataFrame, gains: pd.DataFrame,
-                        borrows: pd.DataFrame) -> dict:
-    """Section bd-rule: one lender's detector in place of the choice."""
+def single_lender_facts(banks: pd.DataFrame, lent: dict) -> dict:
+    """Section bd-rule: one lender's detector in place of the choice, and the
+    lender that gives each bank its lowest gain."""
+    gains, borrows, scored = lent["gains"], lent["borrows"], lent["scores"]
     q1 = banks.index[banks["quartile"] == 1]
     se = banks["weight_se_exp1"]
     lenders = sorted(banks.index[banks["is_lender"]])
     single = gains.loc[q1, lenders].where(borrows.loc[q1, lenders], 0.0)
     means = pd.Series({c: weighted(single[c], se) for c in lenders})
+    ap = pd.Series({c: weighted(scored.loc[q1, c], se) for c in lenders})
     picked = pd.Series({b: gains.loc[b, banks.loc[b, "pick"]] for b in banks.index})
+    worst = single.min(axis=1)
     return {"weighted_mean": means.to_dict(), "range": span(means),
             "best_over_worst": means.max() / means.min(),
             "below_zero": (single < 0).sum().to_dict(),
             "below_zero_most": (single < 0).sum().max(),
             "borrows": borrows.loc[q1, lenders].sum().to_dict(),
+            "ap_with_comparison": ap.to_dict(), "ap_range": span(ap),
+            "lender_train_pos": banks.loc[lenders, "train_pos"].to_dict(),
+            "worst_lender": {"gain": weighted(worst, se),
+                             "banks_below_own": (worst < 0).sum()},
             "check_pick_vs_gain_if_borrowed": (picked - banks["gain_if_borrowed"]).abs().max()}
 
 
@@ -1094,7 +1360,35 @@ def every_bank_borrows_facts(banks: pd.DataFrame, metrics: dict) -> dict:
                       "wholly_below": (banks.loc[q1, "policy_ci_hi"] < 0).sum()}}
 
 
-def quarter_facts(banks: pd.DataFrame, qualifying: pd.Series | None) -> list:
+def quarter_masks(banks: pd.DataFrame) -> dict:
+    return {str(q): (banks["quartile"] == q).to_numpy() for q in (1, 2, 3, 4)} \
+        | {"all": np.ones(len(banks), bool)}
+
+
+def quarter_intervals(banks: pd.DataFrame, reps: np.ndarray, family: str,
+                      metrics: dict) -> dict:
+    """Table bd-quartiles: the 95 % interval of the weighted mean gain in each
+    quarter and over all banks (QUARTER_INTERVALS), beside the policy Run's
+    own intervals for the first quarter and for all banks."""
+    w_all = 1.0 / banks["weight_se_exp1"].to_numpy() ** 2
+    rng = np.random.default_rng(SEED)
+    out = {}
+    for q, m in quarter_masks(banks).items():
+        r = reps[:, m]
+        if family == "gnn":
+            noise = rng.standard_normal(r.shape)
+            rng.standard_normal(r.shape)
+            r = r + noise * np.sqrt(banks["seed_var"].to_numpy()[m] / 3.0)[None, :]
+        r = r[np.all(np.isfinite(r), axis=1)]
+        wm = (r * w_all[m]).sum(axis=1) / w_all[m].sum()
+        out[q] = np.percentile(wm, [2.5, 97.5])
+    out["checks"] = {"quartile_1_vs_primary": max_diff([(out["1"], metrics["primary"]["ci95"])]),
+                     "all_vs_all_banks": max_diff([(out["all"], metrics["all_banks"]["ci95"])])}
+    return out
+
+
+def quarter_facts(banks: pd.DataFrame, qualifying: pd.Series | None,
+                  intervals: dict) -> list:
     """Tables sf-quartiles and bd-quartiles, weighted."""
     se = banks["weight_se_exp1"]
     out = []
@@ -1103,12 +1397,32 @@ def quarter_facts(banks: pd.DataFrame, qualifying: pd.Series | None) -> list:
                "shortfall": weighted(sub["delta_exp1"], se),
                "shortfall_below_zero": (sub["delta_exp1"] < 0).sum(),
                "gain": weighted(sub["policy_gain"], se),
+               "gain_ci95": intervals[str(q)],
                "gain_below_zero": (sub["policy_gain"] < 0).sum(),
                "borrows": sub["borrow"].sum()}
         if qualifying is not None:
             row["qualifying"] = weighted(qualifying.loc[sub.index], se)
             row["qualifying_below_zero"] = (qualifying.loc[sub.index] < 0).sum()
         out.append(row)
+    return out
+
+
+def arrangement_facts(banks: pd.DataFrame, secondpath: pd.DataFrame,
+                      single: dict) -> dict:
+    """Section disc-remedying: the weighted mean score of each arrangement at
+    the quarter holding the fewest confirmed cases and over all banks."""
+    se = banks["weight_se_exp1"]
+    out = {}
+    for scope, m in (("quartile_1", banks["quartile"] == 1),
+                     ("all", np.ones(len(banks), bool))):
+        rows = banks.index[m]
+        out[scope] = {name: weighted(column.loc[rows], se) for name, column in (
+            ("own", banks["solo_ap"]), ("choice", banks["policy_ap"]),
+            ("every_bank_borrows", banks["borrowed_ap"]),
+            ("pooled_examples", banks["clocal_ap"]),
+            ("pooled_records", secondpath["nown_ap"]),
+            ("global_view", banks["global_ap"]))}
+    out["quartile_1"]["single_lender_range"] = single["ap_range"]
     return out
 
 
@@ -1122,15 +1436,76 @@ def largest_facts(roster: pd.DataFrame, q1: pd.Index) -> dict:
     return out
 
 
-def rail_facts(df: pd.DataFrame) -> dict:
+def ledger_counts(df: pd.DataFrame) -> dict:
+    """Per bank identifier, the payments in its ledger: all, by window and
+    label, as Experiment 1's roster counts them."""
+    fb, tb, names = data.bank_codes(df)
+    n = len(names)
+    y = df["is_laundering"].to_numpy(np.int8) == 1
+    split = df["split"].to_numpy(np.int8)
+
+    def count(mask):
+        return data.either_endpoint_counts(fb, tb, mask, n)
+
+    return {"from": fb, "to": tb, "names": names, "y": y, "split": split,
+            "rail": np.array(names) == amlworld.RAIL_BANK,
+            "touching": count(np.ones(len(df), bool)),
+            "train_pos": count((split == 0) & y), "test_pos": count((split == 2) & y),
+            "count": count}
+
+
+def rail_facts(df: pd.DataFrame, c: dict) -> dict:
     rail = amlworld.RAIL_BANK
-    on_from = (df["from_bank"] == rail).to_numpy()
-    on_to = (df["to_bank"] == rail).to_numpy()
+    code = c["names"].index(rail)
+    on_from, on_to = c["from"] == code, c["to"] == code
+    touch = on_from | on_to
+    outgoing = on_from & ~on_to
+    formats, counts = np.unique(df["fmt"].astype(str).to_numpy()[outgoing],
+                                return_counts=True)
     accounts = (set(df["from_acct"][on_from].astype(str))
                 | set(df["to_acct"][on_to].astype(str)))
+    others = ~c["rail"]
+    qualifying = others & (c["test_pos"] >= data.MIN_TEST_POS)
+    test = c["split"] == 2
+    test_rows = c["count"](test)
     return {"accounts": len(accounts),
-            "share_of_payments": (on_from | on_to).mean(),
-            "between_rail_accounts": (on_from & on_to).sum()}
+            "share_of_payments": touch.mean(),
+            "share_of_laundering_payments": touch[c["y"]].mean(),
+            "between_rail_accounts": (on_from & on_to).sum(),
+            "outgoing_share": outgoing.sum() / touch.sum(),
+            "outgoing_formats": {str(f): n / counts.sum() for f, n in zip(formats, counts)},
+            "payments_over_next_largest": (c["touching"][code]
+                                           / c["touching"][others].max()),
+            "test_laundering_payments": c["test_pos"][code],
+            "next_bank_test_laundering_payments": c["test_pos"][others].max(),
+            "rank_by_test_laundering": (c["test_pos"] > c["test_pos"][code]).sum() + 1,
+            "qualifying_test_sets": {
+                "share_of_payments": (c["count"](test & touch)[qualifying].sum()
+                                      / test_rows[qualifying].sum()),
+                "share_of_laundering": (c["count"](test & touch & c["y"])[qualifying].sum()
+                                        / c["test_pos"][qualifying].sum())}}
+
+
+def qualifying_facts(c: dict) -> dict:
+    """Section meth-sets: the qualifying banks at each threshold and, at
+    thirty, what they cover and how they were selected."""
+    others = ~c["rail"]
+    test_pos, train_pos, y, split = c["test_pos"], c["train_pos"], c["y"], c["split"]
+    q = others & (test_pos >= data.MIN_TEST_POS)
+    touches = q[c["from"]] | q[c["to"]]
+
+    def coverage(window: np.ndarray) -> dict:
+        return {"payments": touches[window].mean(),
+                "laundering_payments": touches[window & y].mean()}
+
+    return {"banks_by_threshold": {str(t): (others & (test_pos >= t)).sum()
+                                   for t in THRESHOLDS},
+            "coverage": {"all_windows": coverage(np.ones(len(y), bool)),
+                         "train": coverage(split == 0)},
+            "train_over_test": {
+                "qualifying": train_pos[q].sum() / test_pos[q].sum(),
+                "all_non_rail": train_pos[others].sum() / test_pos[others].sum()},
+            "no_confirmed_case": (others & ~q & (test_pos >= 1) & (train_pos == 0)).sum()}
 
 
 def shared_account_facts(df: pd.DataFrame) -> dict:
@@ -1150,14 +1525,21 @@ def always_zero_facts(key: str) -> dict:
             "windows": sorted({n.rsplit("_", 1)[1] for n in zero})}
 
 
-def census_facts(amlworld_census: dict, transxion: dict, amlgentex: dict) -> dict:
+def census_facts(amlworld_census: dict, transxion: dict, amlgentex_census: dict) -> dict:
     """Table meth-census's laundering rates."""
     counts = {k: (m["n_rows"], m["n_laundering"]) for k, m in amlworld_census.items()}
     counts["transxion"] = (transxion["n_rows"], transxion["n_laundering"])
-    counts[data.AMLGENTEX_DATASET] = (amlgentex["n_real_transfers"],
-                                      amlgentex["n_sar_transfers"])
+    counts[data.AMLGENTEX_DATASET] = (amlgentex_census["n_real_transfers"],
+                                      amlgentex_census["n_sar_transfers"])
     return {"laundering_one_in": {k: rows / laundering
                                   for k, (rows, laundering) in counts.items()}}
+
+
+def flagged_rows_facts(raw: pd.DataFrame) -> dict:
+    """Section meth-conventions: the share of the AMLgentex dataset's
+    laundering-labelled rows that touch the source or sink account."""
+    flagged = raw["is_sar"].to_numpy() == 1
+    return {"flagged_rows_source_sink_share": amlgentex.pseudo_mask(raw)[flagged].mean()}
 
 
 def thesis_metrics(inputs: dict, run_dir: Path) -> dict:
@@ -1166,23 +1548,29 @@ def thesis_metrics(inputs: dict, run_dir: Path) -> dict:
     qualifying = frame(inputs["facts_exp2"], "qualifying")["tree_delta"]
     roster = frame(inputs["roster"], "roster")
     readings = {f: _metrics(p) for f, p in inputs["policy"].items()}
-    lender = {}
+    lender, intervals, arrangements, rank_correlation = {}, {}, {}, {}
     for f, banks in policy.items():
-        gains, borrows = lender_gains(banks, inputs["transfer"][f], inputs["solo"][f], f)
-        lender[f] = single_lender_facts(banks, gains, borrows)
+        lent = lender_gains(banks, inputs["transfer"][f], inputs["solo"][f], f)
+        lender[f] = single_lender_facts(banks, lent)
+        intervals[f] = quarter_intervals(banks, array(inputs["policy"][f], "replicates"),
+                                         f, readings[f])
+        arrangements[f] = arrangement_facts(banks, frame(inputs["secondpath"][f]), lender[f])
+        rank_correlation[f] = spearman(banks["train_pos"].to_numpy(),
+                                       banks["policy_gain"].to_numpy())
     components = _metrics(inputs["components"])["readings"]
-    secondpath = _metrics(inputs["secondpath"])["readings"]
-    ceiling = frame(inputs["ceiling"], "ceiling_descriptors")
+    secondpath = _metrics(inputs["secondpath"]["tree"])["readings"]
     descriptors = frame(inputs["descriptors"], "descriptors")
     over_chance = [_metrics(p)["within_bank_structure_excl_070"][c]["over_chance"]
                    for p in inputs["census"].values() for c in ("laundering", "licit")]
-    rail, shared = {}, None
+    rail, qualifying_sweep, shared = {}, {}, None
     for k in amlworld.SETS:
         df = amlworld.load(k)
-        rail[k] = rail_facts(df)
+        counts = ledger_counts(df)
+        rail[k] = rail_facts(df, counts)
+        qualifying_sweep[k] = qualifying_facts(counts)
         if k == KEY:
             shared = shared_account_facts(df)
-        del df
+        del df, counts
     q1 = policy["tree"].index[policy["tree"]["quartile"] == 1]
     lenders = policy["tree"].loc[policy["tree"]["is_lender"], "train_pos"]
     return plain({
@@ -1190,10 +1578,12 @@ def thesis_metrics(inputs: dict, run_dir: Path) -> dict:
         "single_lender": lender,
         "every_bank_borrows": {f: every_bank_borrows_facts(b, readings[f])
                                for f, b in policy.items()},
-        "quarters": {f: quarter_facts(b, qualifying if f == "tree" else None)
+        "quarters": {f: quarter_facts(b, qualifying if f == "tree" else None, intervals[f])
                      for f, b in policy.items()},
-        "line": {f: readings[f]["threshold"]["line_quarter_of_weighted_shortfall"]
-                 for f in policy},
+        "quarter_interval_checks": {f: i["checks"] for f, i in intervals.items()},
+        "all_banks_ci95": {f: i["all"] for f, i in intervals.items()},
+        "rank_correlation_gain_train_pos": rank_correlation,
+        "arrangements": arrangements,
         "largest": largest_facts(roster, q1),
         "lenders": {"banks": sorted(lenders.index), "count_range": span(lenders)},
         "interaction_tree": {
@@ -1205,15 +1595,13 @@ def thesis_metrics(inputs: dict, run_dir: Path) -> dict:
         "over_chance_range": span(over_chance),
         "census": census_facts({k: _metrics(p) for k, p in inputs["census"].items()},
                                _metrics(inputs["transxion_census"]),
-                               _metrics(inputs["amlgentex_census"])),
-        "typology": {"coverage": ((ceiling["pattern_match_share"]
-                                   * ceiling["laundering_count"]).sum()
-                                  / ceiling["laundering_count"].sum()),
-                     "per_bank_range": span(ceiling["pattern_match_share"])},
+                               _metrics(inputs["amlgentex_census"]))
+        | flagged_rows_facts(amlgentex.load(data.AMLGENTEX_DATASET)),
         "rho_payments_active_accounts": spearman(
             descriptors["payment_count"].to_numpy(),
             descriptors["active_accounts"].to_numpy()),
         "rail": rail,
+        "qualifying": qualifying_sweep,
         "shared_accounts": shared,
         "always_zero": always_zero_facts(data.AMLGENTEX_DATASET),
         "seconds": time.time() - t0})
@@ -1224,6 +1612,7 @@ def thesis_metrics(inputs: dict, run_dir: Path) -> dict:
 BLOCKS = {"exp1": (exp1_inputs, exp1_config, exp1_metrics),
           "exp2": (exp2_inputs, exp2_config, exp2_metrics),
           "exp4": (exp4_inputs, exp4_config, exp4_metrics),
+          "detectors": (detectors_inputs, detectors_config, detectors_metrics),
           "thesis": (thesis_inputs, thesis_config, thesis_metrics)}
 
 
@@ -1252,6 +1641,8 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
+    if sys.argv[1] == "status":
+        return cmd_status()
     exp2_examples.check_execution_settings()
     exp1.install_signal_handlers()
     cmd = sys.argv[1]
@@ -1262,8 +1653,6 @@ def main() -> int:
         for name in BLOCKS:
             cmd_run(name)
         return 0
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

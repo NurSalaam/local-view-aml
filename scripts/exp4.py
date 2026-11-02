@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-"""Experiment 4: Borrowing another bank's detector (Chapter 6). Tests
-hypothesis 3.
+"""Experiment 4 (Chapter 6, The borrowed detector). Tests hypothesis 3.
 
 Units, each one Run keyed by config hash (skip-if-done over the Run log):
 

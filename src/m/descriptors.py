@@ -18,8 +18,8 @@ Every function is a pure function of those arrays. A property that has no
 value on a ledger — a share over an empty set — is NaN, and the caller records
 how many banks that touched; it is never imputed.
 
-The transform is one rule for all twelve: a value *v* enters a rule as
-log(1 + v). It is defined at zero and needs no reference population. How far it
+The transform is the same for all twelve: a value *v* enters a regression
+model as log(1 + v). It is defined at zero and needs no reference population. How far it
 departs from the plain logarithm depends on the size of the value: over
 HI-Medium's qualifying banks the two differ by at most 2e-4 on `payment_count` and by
 0.41 on `external_encounters`, whose smallest value is 2, so the transform is
@@ -89,7 +89,7 @@ class Ledger(NamedTuple):
 
 
 def transform(values: np.ndarray) -> np.ndarray:
-    """The transform: log(1 + v), one rule for every property."""
+    """The transform: log(1 + v), the same for every property."""
     return np.log1p(np.asarray(values, np.float64))
 
 

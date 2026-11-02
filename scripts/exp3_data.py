@@ -42,7 +42,8 @@ from m.features import account_codes  # noqa: E402
 FIT_KEY = "HI-Medium"
 HOLDOUT_KEY = "HI-Small"
 KEYS = (FIT_KEY, HOLDOUT_KEY)
-FAMILIES = ("tree", "gnn")
+FAMILIES = ("tree", "gnn", "blind")
+HOLDOUT_FAMILIES = ("tree", "gnn")
 
 TRAINING_SPLIT = 0
 WINDOW_RULE = ("split == 0 (the training window), same-account rows excluded, "
@@ -94,6 +95,12 @@ def bank_ledger(key: str, bank: str) -> Ledger:
     return ledger_arrays(training_rows(data.read_ledger(key, bank)), bank)
 
 
+def families_of(key: str) -> tuple[str, ...]:
+    """The families read on one dataset: all three on HI-Medium, the tree and
+    GNN families on HI-Small, where the payment-only tree has no shortfall."""
+    return FAMILIES if key == FIT_KEY else HOLDOUT_FAMILIES
+
+
 def roster(key: str) -> pd.DataFrame:
     return data.read_roster(key)
 
@@ -117,6 +124,9 @@ def shortfall_run(key: str, family: str) -> Path:
     global _RUNS
     if _RUNS is None:
         _RUNS = _exp1_runs()
+    if (key, family) not in _RUNS:
+        raise SystemExit(f"exp3: Experiment 1 has no shortfall Run for {key} {family}; "
+                         "run scripts/exp1_analysis.py shortfall first")
     return _RUNS[(key, family)]
 
 

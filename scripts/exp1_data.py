@@ -1,10 +1,11 @@
 """Experiment 1's data plane: dataset keys, rosters, per-bank ledgers, and the pooled
 network-sight tables.
 
-Datasets are the six keys of extract.py, read through its canonical frames.
+Datasets are the keys of extract.py, read through its canonical frames.
 ``PRIMARY`` holds HI-Medium, HI-Small and the two controls; ``ANCHOR_ONLY``
 holds LI-Small and LI-Medium, which take only the global Runs that the
-comparison with published scores reads. A roster is a dataset's qualifying
+checks on the measurement read; ``RELEASES`` holds the eleven other released
+AMLgentex datasets, whose shortfall Appendix C.9 reports. A roster is a dataset's qualifying
 banks: those with at least ``MIN_TEST_POS`` laundering payments in their test
 set, the payment rail excluded on AMLworld. A bank's ledger (the payments touching it, all splits,
 canonical order, with the canonical payment index) is cached once per dataset
@@ -29,7 +30,7 @@ import pyarrow.parquet as pq  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from extract import AMLGENTEX_DATASET, DATASETS, frame, table_path  # noqa: E402
+from extract import AMLGENTEX_DATASET, DATASETS, RELEASES, frame, table_path  # noqa: E402
 from m.features import extract, usd_rate_table  # noqa: E402
 from m.runlog import REPO_ROOT  # noqa: E402
 from m.worlds import amlworld  # noqa: E402
@@ -38,6 +39,7 @@ MIN_TEST_POS = 30
 PRIMARY = ["HI-Medium", "HI-Small", "transxion", AMLGENTEX_DATASET]
 ANCHOR_ONLY = ["LI-Small", "LI-Medium"]
 CONTROLS = ["transxion", AMLGENTEX_DATASET]
+SHORTFALL_KEYS = PRIMARY + RELEASES
 LEDGERS = REPO_ROOT / "data" / "interim" / "exp1" / "ledgers"
 
 

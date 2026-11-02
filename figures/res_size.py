@@ -83,7 +83,7 @@ for side in ("left", "bottom"):
     ax.spines[side].set_color(MUTED)
     ax.spines[side].set_linewidth(0.6)
 ax.set_ylabel("Shortfall, average precision", fontsize=10, color=INK)
-ax.set_xlabel("Size, the bank's test-window payments (log scale)", fontsize=10, color=INK)
+ax.set_xlabel("Size, the test-window payments of the bank (log scale)", fontsize=10, color=INK)
 figure.legend(handles=[
     Line2D([], [], ls="none", marker="o", markersize=4.5, markerfacecolor=BLUE,
            markeredgecolor=BLUE, label="Tree family"),

@@ -7,7 +7,7 @@ per-bank components (tree: median over the eight configurations of the
 per-configuration difference; GNN: mean over the three seeds); its
 metrics.json holds the weighted mean of each component under Experiment 1's
 weights 1/s_B^2 and the 95 % interval from the shared bootstrap draws
-(`readings`). The rows are path 1 of the grid. Both Runs use the (network,
+(`readings`). The rows enlarge the pool first. Both Runs use the (network,
 qualifying) scenario as fitted, not its variant with the count held equal.
 """
 import json

@@ -1,15 +1,16 @@
 #!/usr/bin/env python
 """Experiment 2's analysis Runs (Chapter 4; Appendix C).
 
-One ``components`` Run per detector (tree family, GNN family, blind tree)
-reads the decomposition of the shortfall along path 1 from four scenarios --
-(ledger, own) and (network, all) from Experiment 1, (ledger, qualifying) and
-(network, qualifying) from Experiment 2 -- through one seeded set of
-joint-bootstrap draws of the test window, so every difference is paired. One
-``secondpath`` Run per detector reads path 2 through the grid, by way of
-(network, own). The ``sightcheck`` Run reads the GNN family's value of sight
-on path 1 with the count held equal (``gnn_cglobaldup`` in place of
-(network, qualifying)). One ``dial`` Run per family reads the case reduction
+One ``components`` Run per detector (tree family, GNN family, payment-only
+tree) reads the decomposition of the shortfall with the pool enlarged first
+from four scenarios -- (ledger, own) and (network, all) from Experiment 1,
+(ledger, qualifying) and (network, qualifying) from Experiment 2 -- through
+one seeded set of joint-bootstrap draws of the test window, so every
+difference is paired. One ``secondpath`` Run per detector reads the
+decomposition with sight widened first, by way of (network, own). The
+``sightcheck`` Run reads the GNN family's value of sight with the pool
+enlarged first and with each payment fitted as often as under ledger sight
+(``gnn_cglobaldup`` in place of (network, qualifying)). One ``dial`` Run per family reads the case reduction
 against Experiment 1's solo Runs at the full count. ``all`` runs every one of
 them.
 
@@ -293,7 +294,7 @@ def components_config(family: str, dirs: dict, wpath: Path) -> dict:
         config["seeds"] = exp2.SEEDS
         config["interval"] = GNN_INTERVAL_NOTE
     if family == "blind":
-        config["placebo"] = ("the blind tree reads only a payment's own fields, "
+        config["placebo"] = ("the payment-only tree reads only a payment's own fields, "
                              "so its scores at (ledger, qualifying) and "
                              "(network, qualifying) must be bit-identical and "
                              "its value of sight exactly zero")
@@ -320,7 +321,7 @@ def components_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
         placebo = {"bit_identical": bool(all(d == 0.0 for d in diffs)),
                    "max_abs_diff": max(diffs)}
         assert placebo["bit_identical"], \
-            ("the placebo failed: the blind tree's scores at (ledger, qualifying) "
+            ("the placebo failed: the payment-only tree's scores at (ledger, qualifying) "
              "and (network, qualifying) differ")
 
     boot = four_cell_bootstrap(cell["n_test"], groups)
@@ -637,7 +638,7 @@ def second_path_metrics(family: str, dirs: dict, wpath: Path, wmetrics: dict,
         placebo = {"bit_identical": bool(all(d == 0.0 for d in diffs)),
                    "max_abs_diff": max(diffs)}
         assert placebo["bit_identical"], \
-            ("the placebo failed: the blind tree's scores at (network, own) and "
+            ("the placebo failed: the payment-only tree's scores at (network, own) and "
              "(ledger, own) differ")
 
     boot = four_cell_bootstrap(cell["n_test"], groups, sides)
@@ -913,6 +914,8 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
+    if sys.argv[1] == "status":
+        return cmd_status()
     exp1.check_execution_settings()
     exp1.install_signal_handlers()
     cmd, args = sys.argv[1], sys.argv[2:]
@@ -926,8 +929,6 @@ def main() -> int:
         return 0 if cmd_sightcheck() is not None else 1
     if cmd == "secondpath":
         return 0 if cmd_secondpath(args[0]) is not None else 1
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

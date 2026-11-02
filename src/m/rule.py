@@ -1,14 +1,15 @@
-"""Rules on a bank's properties: candidates, fitting and folds.
+"""Regression models on a bank's properties: candidates, fitting and folds.
 
-A *rule* is a linear model on transformed property values whose coefficients
-are the only fitted quantities, so a bank plugs its own numbers into the
-formula and needs no reference population. That is what makes the rule usable
-by a bank, and it is why nothing here standardises or centres a property.
+A regression model is linear in transformed property values, and its
+coefficients are the only fitted quantities, so a bank plugs its own numbers
+into the formula and needs no reference population. That is what makes the
+model usable by a bank, and it is why nothing here standardises or centres a
+property.
 
 Data. A candidate is a name and an ordered tuple of property names. A design
 matrix is (banks, properties) of already-transformed values in the candidate's
 order; a target is (banks,) of measured shortfalls; weights are (banks,) of
-1/s_B². A fitted rule is the intercept and one coefficient per property, in
+1/s_B². A fitted model is the intercept and one coefficient per property, in
 the candidate's order — small enough to print and apply by hand.
 
 Fold identity is a function of the repeat index alone: repeat *r* permutes the
@@ -81,7 +82,7 @@ def out_of_fold(design: np.ndarray, target: np.ndarray, weights: np.ndarray, *,
                 repeats: int = REPEATS, n_folds: int = N_FOLDS) -> np.ndarray:
     """Every bank's prediction from a fit that never saw it, once per repeat;
     returns (repeats, banks). Which columns are constant is decided once on the
-    whole fitting roster, so every fold fits the same rule shape."""
+    whole fitting roster, so every fold fits the same model shape."""
     keep = ~constant_columns(design)
     k = len(target)
     predictions = np.empty((repeats, k))

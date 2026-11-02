@@ -1,16 +1,19 @@
 #!/usr/bin/env python
-"""Experiment 3: Rules on the ledger (Chapter 5).
+"""Experiment 3 (Chapter 5, Ranking the banks by their shortfall): the
+stages after the label-free properties and the sixteen regression models.
 
 Five stages, in order. **Inputs** checks every shortfall table read here
 against its recorded digest and its bootstrap replicates. **Screen** gives
 each label-free property's rank correlation with the shortfall on HI-Medium's
 107 qualifying banks, and its partial rank correlation with both properties of
-scale held fixed. **Holdout** fits the scale rule on those 107 banks and
-applies it unchanged to HI-Small's eleven. **Ceiling** computes the six
-quantities computed from labels and scores the rules that use labels out of
-fold, exactly as the selection scores the rules on label-free properties.
-**Bank facing** fits the rule on scale and confirmed cases on the 107 banks
-and applies it unchanged to HI-Small's eleven.
+scale held fixed. **Holdout** fits the scale model on those 107 banks and
+applies it unchanged to HI-Small's eleven. **Ceiling** computes the two
+quantities computed from labels and scores the two models that use labels out
+of fold, exactly as the selection scores the models on label-free properties.
+**Bank facing** fits the model on scale and confirmed cases on the 107 banks
+and applies it unchanged to HI-Small's eleven. The tree family, the GNN family
+and the payment-only tree are read on HI-Medium; HI-Small is read in the tree
+and GNN families.
 
 No model trains. Every number is a function of the cached AMLworld tables, the
 Runs of `exp3_descriptors.py` and Experiment 1's recorded shortfalls, each Run
@@ -41,7 +44,7 @@ from m import completed, config_hash, run, track  # noqa: E402
 from m import ceiling as lab  # noqa: E402
 from m import descriptors as desc  # noqa: E402
 from m import rank, rule  # noqa: E402
-from m.artifacts import sha256_of, verify, write_csv  # noqa: E402
+from m.artifacts import verify, write_csv  # noqa: E402
 from m.worlds import amlworld  # noqa: E402
 
 EXPERIMENT = "exp3"
@@ -50,8 +53,8 @@ BOOTSTRAP_DRAWS = 1000
 
 SCALE = desc.GROUPS[desc.BASELINE]
 
-CEILING_GROUPS = {desc.BASELINE: SCALE, **lab.GROUPS}
-CEILING_CANDIDATES = rule.candidates(CEILING_GROUPS, desc.BASELINE)
+CEILING_CANDIDATES = (rule.Candidate(desc.BASELINE, SCALE),) + tuple(
+    rule.Candidate(f"{desc.BASELINE}+{name}", SCALE + (name,)) for name in lab.NAMES)
 CEILING_ORDER = [candidate.name for candidate in CEILING_CANDIDATES]
 
 BANK_FACING = ("payment_count", "active_accounts", "laundering_count")
@@ -97,15 +100,18 @@ def inputs_config(done: dict) -> dict:
                     "persisted bootstrap replicates; every table of label-free properties "
                     "covers exactly the same banks",
             "tolerance": {"bootstrap_standard_error": 1e-6},
-            "cells": [f"{key}/{family}" for key in dd.KEYS for family in dd.FAMILIES],
-            "inputs": _inputs(dd.FAMILIES, dd.KEYS, done)}
+            "cells": [f"{key}/{family}" for key in dd.KEYS
+                      for family in dd.families_of(key)],
+            "inputs": {**_inputs(dd.FAMILIES, (dd.FIT_KEY,), done),
+                       "holdout": _inputs(dd.HOLDOUT_FAMILIES, (dd.HOLDOUT_KEY,),
+                                          done)["shortfall"]}}
 
 
 def inputs_metrics(run_dir: Path, done: dict) -> dict:
     rows = []
     for key in dd.KEYS:
         values = exp3_descriptors.descriptor_table(key, done)
-        for family in dd.FAMILIES:
+        for family in dd.families_of(key):
             target = dd.targets(key, family)
             path = dd.shortfall_run(key, family)
             roster = pd.read_csv(path / "artifacts" / "roster.csv",
@@ -187,7 +193,7 @@ def screen_metrics(run_dir: Path, done: dict) -> dict:
 def holdout_config(family: str, done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "holdout", "family": family,
             "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "rule": "the scale rule: one weighted least-squares fit (weights 1 over "
+            "model": "the scale model: one weighted least-squares fit (weights 1 over "
                     "s_B squared) on every qualifying bank of the fitting dataset, "
                     "written to coefficients.csv and applied unchanged to the "
                     "held-out banks",
@@ -215,7 +221,7 @@ def holdout_metrics(family: str, run_dir: Path, done: dict) -> dict:
                          index=target_table.index)
 
     return {"family": family, "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "k": int(len(target)), "rule": desc.BASELINE, "properties": list(SCALE),
+            "k": int(len(target)), "model": desc.BASELINE, "properties": list(SCALE),
             "rho": rank.spearman(prediction, target),
             "seconds": time.time() - t0,
             "artifacts": {"holdout": write_csv(run_dir, "holdout", banks),
@@ -230,111 +236,40 @@ def ceiling_descriptor_config() -> dict:
     return {"experiment": EXPERIMENT, "check": "ceiling_descriptors",
             "dataset_key": dd.FIT_KEY,
             "window": "split == 0 (the training window), same-account rows excluded, "
-                      "labels read: these quantities are the yardstick, not a bank's tool",
+                      "labels read: the bank's own confirmed cases",
             "descriptors": {name: lab.DESCRIPTIONS[name] for name in lab.NAMES},
-            "groups": {name: list(members) for name, members in lab.GROUPS.items()},
-            "adjacency": "two payments are adjacent when they share an account, "
-                         "keyed by the (bank, account) pair",
-            "homophily": {"primary": "the pooled ratio over the bank's focal "
-                                     "payments",
-                          "beside_it": "the mean over focal payments of each one's own "
-                                       "ratio, which weights a payment's neighbourhood "
-                                       "by its size not at all"},
-            "rail": {"bank": amlworld.RAIL_BANK,
-                     "rule": "the payment rail's accounts are excluded from the "
-                             "neighbourhood counts; the rail-included reading is "
-                             "computed beside it"},
-            "patterns": {"families": list(amlworld.PATTERN_FAMILIES),
-                         "chain": list(amlworld.CHAIN_FAMILIES),
-                         "join": amlworld.JOIN_FIELDS},
-            "patterns_file_sha256": sha256_of(
-                amlworld.RAW / f"{dd.data.DATASETS[dd.FIT_KEY][1]}_Patterns.txt"),
-            "roster_and_base_rate_from": {
-                "note": "the qualifying banks and their test base rates are read from "
-                        "Experiment 1's shortfall Run for the tree family; the roster "
-                        "artefact is byte-identical across the families",
+            "roster_from": {
+                "note": "the qualifying banks are read from Experiment 1's shortfall "
+                        "Run for the tree family; the roster artefact is "
+                        "byte-identical across the families",
                 "shortfall": dd.shortfall_hash(dd.FIT_KEY, dd.FAMILIES[0])},
-            "ceiling_version": lab.VERSION, "descriptors_version": desc.VERSION,
-            "rank_version": rank.VERSION}
+            "ceiling_version": lab.VERSION, "descriptors_version": desc.VERSION}
 
 
 def ceiling_descriptor_metrics(run_dir: Path) -> dict:
-    from m.features import account_codes
-
     t0 = time.time()
     df = amlworld.load(dd.data.DATASETS[dd.FIT_KEY][1])
-    codes, coverage = amlworld.pattern_family_codes(dd.data.DATASETS[dd.FIT_KEY][1], df)
-
     training = (df["split"].to_numpy() == dd.TRAINING_SPLIT) & ~df["same_account"].to_numpy()
-    rows = np.flatnonzero(training)
-    frame = df.iloc[rows]
-    payer, payee = account_codes(frame)
-    y = frame["is_laundering"].to_numpy(np.int8).astype(np.float64)
+    frame = df.iloc[np.flatnonzero(training)]
+    laundering = frame["is_laundering"].to_numpy(np.int8) == 1
     from_bank = frame["from_bank"].astype(str).to_numpy()
     to_bank = frame["to_bank"].astype(str).to_numpy()
-    family = codes[rows]
-    del df
+    del df, frame
 
-    rail = (from_bank == amlworld.RAIL_BANK) | (to_bank == amlworld.RAIL_BANK)
-    total, laundering_total = lab.neighbourhood(payer, payee, y)
-    keep = np.flatnonzero(~rail)
-    total_norail, laundering_norail = lab.neighbourhood(payer[keep], payee[keep], y[keep])
-
-    target_table = dd.targets(dd.FIT_KEY, dd.FAMILIES[0])
-    n_families = len(amlworld.PATTERN_FAMILIES)
-    chain = np.array([amlworld.PATTERN_FAMILIES.index(name)
-                      for name in amlworld.CHAIN_FAMILIES])
-
-    records = []
-    for bank in track(list(target_table.index), "quantities computed from labels"):
-        touches = (from_bank == bank) | (to_bank == bank)
-        focal = touches & (y == 1)
-        matched = family[focal] >= 0
-        focal_norail = focal[keep] & (y[keep] == 1)
-        records.append({
-            "bank": bank,
-            "laundering_count": float(focal.sum()),
-            "test_base_rate": float(target_table.loc[bank, "test_base_rate"]),
-            "laundering_internal_share": float(
-                ((from_bank == bank) & (to_bank == bank) & (y == 1)).sum() / focal.sum())
-            if focal.sum() else np.nan,
-            "chain_pattern_share": float(np.isin(family[focal][matched], chain).mean())
-            if matched.any() else np.nan,
-            "class_homophily": lab.homophily(total_norail, laundering_norail,
-                                             focal_norail),
-            "class_homophily_with_rail": lab.homophily(total, laundering_total, focal),
-            "class_homophily_mean_of_ratios": lab.mean_of_ratios(
-                total_norail, laundering_norail, focal_norail),
-            "pattern_entropy": lab.entropy(family[focal][matched], n_families),
-            "pattern_match_share": float(matched.mean()) if focal.sum() else np.nan,
-            "mean_neighbourhood": float(total[focal].mean()) if focal.sum() else np.nan,
-        })
-
-    table = pd.DataFrame(records).set_index("bank")
+    banks = list(dd.targets(dd.FIT_KEY, dd.FAMILIES[0]).index)
+    table = pd.DataFrame({bank: lab.quantities(from_bank, to_bank, laundering, bank)
+                          for bank in track(banks, "quantities computed from labels")}).T
+    table.index.name = "bank"
     for name in lab.NAMES:
         table[f"log1p_{name}"] = np.log1p(table[name].to_numpy(np.float64))
-    table["log1p_class_homophily_with_rail"] = np.log1p(
-        table["class_homophily_with_rail"].to_numpy(np.float64))
 
     summary = {name: {"defined": int(table[name].notna().sum()),
                       "distinct": int(table[name].nunique()),
                       "zero": int((table[name] == 0).sum()),
                       "min": float(table[name].min()),
-                      "q25": float(table[name].quantile(0.25)),
                       "median": float(table[name].median()),
-                      "q75": float(table[name].quantile(0.75)),
                       "max": float(table[name].max())} for name in lab.NAMES}
     return {"dataset_key": dd.FIT_KEY, "k": int(len(table)),
-            "pattern_coverage": coverage,
-            "training_laundering_with_a_family": float((family >= 0)[y == 1].mean()),
-            "pattern_match_share": {"min": float(table["pattern_match_share"].min()),
-                                    "median": float(table["pattern_match_share"].median()),
-                                    "max": float(table["pattern_match_share"].max())},
-            "rail_payments_dropped": int(rail.sum()),
-            "rail_laundering_dropped": int((rail & (y == 1)).sum()),
-            "homophily_rank_agreement_with_neighbourhood_size": rank.spearman(
-                table["class_homophily_with_rail"].to_numpy(),
-                table["mean_neighbourhood"].to_numpy()),
             "quantity": summary, "seconds": time.time() - t0,
             "artifacts": {"ceiling_descriptors": write_csv(
                 run_dir, "ceiling_descriptors", table)}}
@@ -348,10 +283,10 @@ def ceiling_config(family: str, done: dict) -> dict:
             "folds": {"n_folds": rule.N_FOLDS, "repeats": rule.REPEATS},
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
-                                 "label_using": len(CEILING_CANDIDATES)},
-            "protocol": "the folds, fitting rule, ranking metric and comparison "
-                        "with the scale rule of the rules on label-free "
-                        "properties, unchanged",
+                                 "label_using": len(CEILING_CANDIDATES) - 1},
+            "protocol": "the folds, fitting, ranking metric and comparison with "
+                        "the scale model of the models on label-free properties, "
+                        "unchanged",
             "inputs": {**_inputs((family,), (dd.FIT_KEY,), done),
                        "ceiling_descriptors": config_hash(ceiling_descriptor_config())},
             "ceiling_version": lab.VERSION, "rule_version": rule.VERSION,
@@ -399,19 +334,17 @@ def ceiling_metrics(family: str, run_dir: Path, done: dict) -> dict:
     oof.insert(0, "delta", target)
 
     return {"family": family, "dataset_key": dd.FIT_KEY, "k": int(len(target)),
-            "ceiling_rule": best, "ceiling_score": score[best],
-            "ceiling_reading": "the rule that uses labels with the highest "
-                               "out-of-fold rho",
-            "outperform_the_scale_rule": beaters,
+            "best_model": best, "best_score": score[best],
+            "outperform_the_scale_model": beaters,
             "candidate_counts": {"label_free": len(exp3_descriptors.CANDIDATES),
-                                 "label_using": len(CEILING_CANDIDATES)},
+                                 "label_using": len(CEILING_CANDIDATES) - 1},
             "seconds": time.time() - t0,
             "artifacts": {"candidates": write_csv(
                 run_dir, "candidates", pd.DataFrame(rows).set_index("candidate")),
                 "oof": write_csv(run_dir, "oof", oof)}}
 
 
-# ---------------------------------------- the rule on scale and confirmed cases --
+# ------------------------------- the model on scale and confirmed cases --
 
 def bank_facing_counts_config() -> dict:
     return {"experiment": EXPERIMENT, "check": "bank_facing_counts",
@@ -420,7 +353,7 @@ def bank_facing_counts_config() -> dict:
                       "labels read: the count is the bank's own confirmed cases",
             "descriptor": {"laundering_count": lab.DESCRIPTIONS["laundering_count"]},
             "definition": "the ceiling's laundering_count, computed on the held-out "
-                          "dataset so that the rule on scale and confirmed cases can "
+                          "dataset so that the model on scale and confirmed cases can "
                           "be applied there",
             "roster_and_targets_from": {
                 "shortfall": dd.shortfall_hash(dd.HOLDOUT_KEY, dd.FAMILIES[0])},
@@ -459,15 +392,15 @@ def bank_facing_counts_metrics(run_dir: Path) -> dict:
 def bank_facing_config(family: str, done: dict) -> dict:
     return {"experiment": EXPERIMENT, "check": "bank_facing", "family": family,
             "fit_on": dd.FIT_KEY, "test_on": dd.HOLDOUT_KEY,
-            "rule": "the rule on scale and confirmed cases: one weighted least-squares "
+            "model": "the model on scale and confirmed cases: one weighted least-squares "
                     "fit (weights 1 over s_B squared, as the selection used) on the "
                     "ceiling Run's 107 rows, inputs log(1+payment count), "
                     "log(1+active accounts), log(1+laundering count), written to "
                     "coefficients.csv and applied unchanged to the held-out banks",
             "descriptors": list(BANK_FACING),
             "bootstrap": {"draws": BOOTSTRAP_DRAWS, "seed": SEED},
-            "beside_it": "the scale rule's held-out reading, from the holdout Run, and "
-                         "the ceiling Run's out-of-fold score for the same rule",
+            "beside_it": "the scale model's held-out reading, from the holdout Run, and "
+                         "the ceiling Run's out-of-fold score for the same model",
             "inputs": {**_inputs((family,), (dd.FIT_KEY, dd.HOLDOUT_KEY), done),
                        "ceiling_descriptors": config_hash(ceiling_descriptor_config()),
                        "bank_facing_counts": config_hash(bank_facing_counts_config()),
@@ -539,7 +472,7 @@ def bank_facing_metrics(family: str, run_dir: Path, done: dict) -> dict:
                                                       "score"]),
             "rho": rank.spearman(prediction, held),
             "bootstrap_ci95": interval["ci95"],
-            "label_free": {"rule": label_free["rule"], "rho": label_free["rho"]},
+            "label_free": {"model": label_free["model"], "rho": label_free["rho"]},
             "seconds": time.time() - t0,
             "artifacts": {"holdout": write_csv(run_dir, "holdout", banks),
                           "coefficients": write_csv(run_dir, "coefficients",
@@ -565,27 +498,26 @@ def cmd(stage: str, done: dict) -> None:
               f"{len(dd.FAMILIES)} families' shortfalls on {metrics['k']} banks",
               flush=True)
     elif stage == "holdout":
-        for family in dd.FAMILIES:
+        for family in dd.HOLDOUT_FAMILIES:
             metrics = run(EXPERIMENT, holdout_config(family, done),
                           lambda config, run_dir, f=family:
                           holdout_metrics(f, run_dir, done), done=done)
-            print(f"holdout {family}: the scale rule ranks {dd.HOLDOUT_KEY}'s "
+            print(f"holdout {family}: the scale model ranks {dd.HOLDOUT_KEY}'s "
                   f"{metrics['k']} banks at rho {metrics['rho']:+.4f}", flush=True)
     elif stage == "ceiling":
         metrics = run(EXPERIMENT, ceiling_descriptor_config(),
                       lambda config, run_dir: ceiling_descriptor_metrics(run_dir),
                       done=done)
-        print(f"ceiling_descriptors: {metrics['k']} banks, pattern coverage "
-              f"{metrics['training_laundering_with_a_family']:.3f} of the training "
-              f"window's laundering rows, per-bank match share median "
-              f"{metrics['pattern_match_share']['median']:.3f}", flush=True)
+        print(f"ceiling_descriptors: {metrics['k']} banks, confirmed cases "
+              f"{metrics['quantity']['laundering_count']['min']:.0f} to "
+              f"{metrics['quantity']['laundering_count']['max']:.0f}", flush=True)
         for family in dd.FAMILIES:
             out = run(EXPERIMENT, ceiling_config(family, done),
                       lambda config, run_dir, f=family:
                       ceiling_metrics(f, run_dir, done), done=done)
-            print(f"ceiling {family}: {out['ceiling_rule']} at rho "
-                  f"{out['ceiling_score']:+.4f}; outperform the scale rule: "
-                  f"{out['outperform_the_scale_rule'] or 'none'}", flush=True)
+            print(f"ceiling {family}: {out['best_model']} at rho "
+                  f"{out['best_score']:+.4f}; outperform the scale model: "
+                  f"{out['outperform_the_scale_model'] or 'none'}", flush=True)
     elif stage == "bank_facing":
         metrics = run(EXPERIMENT, bank_facing_counts_config(),
                       lambda config, run_dir: bank_facing_counts_metrics(run_dir),
@@ -594,13 +526,13 @@ def cmd(stage: str, done: dict) -> None:
               f"counts {metrics['counts']['min']} to {metrics['counts']['max']} "
               f"about a median of {metrics['counts']['median']:.0f}", flush=True)
         done.update(completed(EXPERIMENT))
-        for family in dd.FAMILIES:
+        for family in dd.HOLDOUT_FAMILIES:
             out = run(EXPERIMENT, bank_facing_config(family, done),
                       lambda config, run_dir, f=family:
                       bank_facing_metrics(f, run_dir, done), done=done)
             low, high = out["bootstrap_ci95"]
             print(f"bank_facing {family}: held-out rho {out['rho']:+.4f} "
-                  f"(95 % interval {low:+.2f} to {high:+.2f}); scale rule "
+                  f"(95 % interval {low:+.2f} to {high:+.2f}); scale model "
                   f"{out['label_free']['rho']:+.4f}; out-of-fold "
                   f"{out['ceiling_oof_score']:+.4f}", flush=True)
     else:

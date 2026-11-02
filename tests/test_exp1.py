@@ -28,8 +28,8 @@ from m.gnn import (GNNConfig, _attach_edge_features, payment_graph,  # noqa: E40
 from m.lgbdata import (RepeatedRowsSequence, RowGroupReader, construct,  # noqa: E402
                        fit_grid, predict_matrix, predict_rows, repeat_index)
 from m.stats import (aggregate_shortfalls, heterogeneity, joint_bootstrap,  # noqa: E402
-                     leave_one_out, null_q_check, spearman_bank_bootstrap,
-                     weighted_average_precision)
+                     leave_each_out, leave_one_out, null_q_check,
+                     spearman_bank_bootstrap, weighted_average_precision)
 
 
 class TestStreamedCopies(unittest.TestCase):
@@ -220,6 +220,34 @@ class TestStatistics(unittest.TestCase):
         out = leave_one_out(labels, np.array([0.1, 0.2, 0.3]), np.array([0.05, 0.01, 0.05]))
         self.assertEqual(out["dropped"], "b")
         self.assertEqual(out["k"], 2)
+
+    def test_leave_each_out_three_bank_toy(self):
+        deltas, ses = np.array([0.10, 0.30, 0.50]), np.full(3, 0.05)
+        out = leave_each_out(["a", "b", "c"], deltas, ses)
+        i2 = {r["bank"]: r["I2"] for r in out["removals"]}
+        self.assertAlmostEqual(i2["a"], 7 / 8)
+        self.assertAlmostEqual(i2["c"], 7 / 8)
+        self.assertAlmostEqual(i2["b"], 31 / 32)
+        self.assertAlmostEqual(out["min_I2"], 0.875)
+        self.assertIn(out["min_bank"], ("a", "c"))
+        self.assertAlmostEqual(out["full"]["weight_term"], 800.0)
+        self.assertAlmostEqual(out["full"]["excess"], 30.0)
+        self.assertAlmostEqual(out["full"]["tau"], np.sqrt(30 / 800))
+        self.assertAlmostEqual(round(out["full"]["tau"], 3), 0.194)
+        self.assertAlmostEqual(sum(r["weight_share"] for r in out["removals"]), 1.0)
+        self.assertAlmostEqual(sum(r["q_share"] for r in out["removals"]), 1.0)
+        self.assertNotIn("passes", out["removals"][0])
+
+    def test_leave_each_out_null_matches_null_check_on_kept_columns(self):
+        k, R = 6, 400
+        ses = self.rng.random(k) * 0.05 + 0.02
+        deltas = self.rng.standard_normal(k) * 0.3
+        reps = deltas[None, :] + self.rng.standard_normal((R, k)) * ses[None, :]
+        out = leave_each_out(list("abcdef"), deltas, ses, reps)
+        keep = np.arange(k) != 2
+        direct = null_q_check(reps[:, keep], deltas[keep], ses[keep])
+        self.assertEqual(out["removals"][2]["null_q95"], direct["null_q95"])
+        self.assertEqual(out["removals"][2]["passes"], direct["passes"])
 
     def test_joint_bootstrap_shapes_and_aggregates(self):
         n_test = 2000

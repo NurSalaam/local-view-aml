@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Experiment 2's reading of confirmed cases across banks (Chapter 4). Analysis
-only: no model trains. One ``examples`` Run per family (tree, GNN) correlates
-the bank's number of confirmed cases (its training-window laundering payments)
-with its Experiment 1 shortfall, raw and with size held fixed, and assigns
-each bank its quarter by its number of confirmed cases. The config cites the
+only: no model trains. One ``examples`` Run per detector (tree family, GNN
+family, payment-only tree) correlates the bank's number of confirmed cases (its
+training-window laundering payments) with its Experiment 1 shortfall, raw and
+with size held fixed, and assigns each bank its quarter by its number of
+confirmed cases. The config cites the
 shortfall Run's hash, so a re-done input re-keys the reading; skip-if-done is
 by config hash.
 
@@ -40,7 +41,7 @@ from m.runlog import config_hash, experiments_root  # noqa: E402
 
 EXPERIMENT = "exp2"
 KEY = "HI-Medium"
-FAMILIES = ("tree", "gnn")
+FAMILIES = ("tree", "gnn", "blind")
 PERMUTATIONS = 10_000
 BLOCK_WIDTH = 5
 SEED = 0
@@ -169,7 +170,7 @@ def cmd_status() -> int:
         state = ("inputs incomplete" if shortfall is None else
                  "analysed" if config_hash(examples_config(family, shortfall))
                  in done else "ready")
-        print(f"examples {family:4s} {state}")
+        print(f"examples {family:5s} {state}")
     return 0
 
 
@@ -177,6 +178,8 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
+    if sys.argv[1] == "status":
+        return cmd_status()
     check_execution_settings()
     exp1.install_signal_handlers()
     cmd, args = sys.argv[1], sys.argv[2:]
@@ -184,8 +187,6 @@ def main() -> int:
         return 0 if cmd_examples(args[0]) is not None else 1
     if cmd == "all":
         return cmd_all()
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

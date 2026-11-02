@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """The placebo on HI-Small (Chapter 3, Checks on the measurement).
 
-The blind tree reads the payment's own fields only. Its training tables under
+The payment-only tree reads the payment's own fields only. Its training tables under
 ledger sight and network sight are assembled under the row rule through the
 same code paths the real detectors use — the network-sight table indexes the
 pooled fields by copy, the ledger-sight table is scattered bank by bank from

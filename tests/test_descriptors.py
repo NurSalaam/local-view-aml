@@ -1,4 +1,5 @@
-"""The label-free properties, the rule machinery, and the rank statistics.
+"""The label-free properties, the regression models, the two quantities
+computed from labels, and the rank statistics.
 
 Every property against a hand-computed value on a ledger small enough to
 check by eye; the folds against their definition; the partial rank
@@ -117,7 +118,7 @@ class Candidates(unittest.TestCase):
         self.assertTrue(np.array_equal(rule.fold_ids(50, 2), rule.fold_ids(50, 2)))
         self.assertFalse(np.array_equal(rule.fold_ids(50, 2), rule.fold_ids(50, 3)))
 
-    def test_weighted_fit_recovers_a_planted_rule(self) -> None:
+    def test_weighted_fit_recovers_a_planted_model(self) -> None:
         rng = np.random.default_rng(0)
         design = rng.normal(size=(200, 2))
         target = 0.5 + 2.0 * design[:, 0] - 1.0 * design[:, 1]
@@ -210,24 +211,42 @@ class RankStatistics(unittest.TestCase):
         self.assertLess(conditional / trials, 0.20)
 
 
-class Neighbourhood(unittest.TestCase):
-    def test_counts_against_brute_force(self) -> None:
-        rng = np.random.default_rng(7)
-        payer = rng.integers(0, 12, 60)
-        payee = rng.integers(0, 12, 60)
-        keep = payer != payee
-        payer, payee = payer[keep], payee[keep]
-        y = (rng.random(len(payer)) < 0.3).astype(np.float64)
-        total, laundering = lab.neighbourhood(payer, payee, y)
-        for i in range(len(payer)):
-            touching = {j for j in range(len(payer)) if j != i
-                        and {payer[j], payee[j]} & {payer[i], payee[i]}}
-            self.assertEqual(total[i], len(touching))
-            self.assertEqual(laundering[i], sum(y[j] for j in touching))
+class LabelQuantities(unittest.TestCase):
+    def test_counts_and_internal_share_by_hand(self) -> None:
+        from_bank = np.array(["a", "a", "b", "a", "c"])
+        to_bank = np.array(["a", "b", "a", "c", "c"])
+        laundering = np.array([True, True, False, True, True])
+        a = lab.quantities(from_bank, to_bank, laundering, "a")
+        self.assertEqual(a["laundering_count"], 3.0)
+        self.assertAlmostEqual(a["laundering_internal_share"], 1 / 3)
+        b = lab.quantities(from_bank, to_bank, laundering, "b")
+        self.assertEqual(b["laundering_count"], 1.0)
+        self.assertEqual(b["laundering_internal_share"], 0.0)
+        self.assertTrue(np.isnan(lab.quantities(from_bank, to_bank,
+                                                np.zeros(5, bool), "b")
+                                 ["laundering_internal_share"]))
 
-    def test_entropy_of_one_family_is_zero(self) -> None:
-        self.assertEqual(lab.entropy(np.zeros(9, np.int64), 8), 0.0)
-        self.assertAlmostEqual(lab.entropy(np.array([0, 1]), 8), np.log(2))
+
+class StatusOnEmptyRunLog(unittest.TestCase):
+    def test_status_names_missing_stage(self):
+        import contextlib
+        import io
+        import os
+        import tempfile
+        from unittest import mock
+
+        sys.path.insert(0, str(REPO / "scripts"))
+        import exp3_data
+        import exp3_readings
+
+        with tempfile.TemporaryDirectory() as empty, \
+                mock.patch.dict(os.environ, {"M_EXPERIMENTS_DIR": empty}), \
+                mock.patch.object(exp3_data, "_RUNS", None):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(exp3_readings.cmd_status(), 0)
+        self.assertIn("inputs incomplete", out.getvalue())
+        self.assertIn("no shortfall Run", out.getvalue())
 
 
 if __name__ == "__main__":

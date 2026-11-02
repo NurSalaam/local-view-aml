@@ -1,12 +1,14 @@
 #!/usr/bin/env python
-"""Experiment 3: Rules on the ledger (Chapter 5). The label-free properties
-and the sixteen rules on them.
+"""Experiment 3 (Chapter 5, Ranking the banks by their shortfall): the
+label-free properties and the sixteen regression models on them.
 
 Computes the twelve label-free properties of every qualifying bank of HI-Medium
-and HI-Small, then scores the sixteen rules on HI-Medium's 107 qualifying banks
-for each family: each rule's out-of-fold rho, and its paired bank-bootstrap
-difference from the scale rule, which gives the verdict on hypothesis 2. Nothing trains; every number is a function of
-the cached ledgers and of Experiment 1's recorded shortfalls.
+and HI-Small, then scores the sixteen regression models on HI-Medium's 107
+qualifying banks for the tree family, the GNN family and the payment-only
+tree: each model's out-of-fold rho, and its paired bank-bootstrap difference
+from the scale model, which gives the verdict on hypothesis 2. Nothing trains;
+every number is a function of the cached ledgers and of Experiment 1's recorded
+shortfalls.
 
 A check precedes every reading. It recomputes ten banks' properties by a
 deliberately naive second implementation — pandas group-bys over account
@@ -19,7 +21,7 @@ the rows it counts: shuffling a block of rows among themselves preserves the
 multiset and could not move a property that reads them, so a permutation
 check would pass whatever the properties did.
 
-  uv run python scripts/exp3_descriptors.py                 # check, properties, rules
+  uv run python scripts/exp3_descriptors.py                 # check, properties, models
   uv run python scripts/exp3_descriptors.py HI-Medium       # one dataset's properties
 
 LightGBM is never imported; torch enters only through the per-Run fingerprint.
@@ -294,11 +296,12 @@ def selection_config(family: str) -> dict:
                       "assignment": "the roster's canonical order permuted at the "
                                     "repeat index, cut into contiguous blocks"},
             "metric": "mean over repeats of the out-of-fold Spearman correlation",
-            "outperforms": "a rule outperforms the scale rule when the 5th "
+            "outperforms": "a model outperforms the scale model when the 5th "
                            "percentile of the paired bank-bootstrap difference "
                            "between the two exceeds zero",
-            "hypothesis_2": "refuted for the family when none of the fifteen "
-                            "other rules outperforms the scale rule",
+            "hypothesis_2": "supported in the family when at least one of the "
+                            "fifteen other models outperforms the scale model, "
+                            "not supported otherwise",
             "estimand": "the mean over repeats of the out-of-fold rank correlation; "
                         "every score, standard deviation and difference is that "
                         "same quantity",
@@ -310,7 +313,7 @@ def selection_config(family: str) -> dict:
 
 def evaluate(design_all: pd.DataFrame, target: np.ndarray, weights: np.ndarray) -> dict:
     """Every candidate's out-of-fold predictions, its out-of-fold rho and its
-    paired bank-bootstrap difference from the scale rule, all of them the
+    paired bank-bootstrap difference from the scale model, all of them the
     *same* estimand: the mean over repeats of the out-of-fold rank
     correlation."""
     out = {}
@@ -332,7 +335,7 @@ def evaluate(design_all: pd.DataFrame, target: np.ndarray, weights: np.ndarray) 
 
 
 def outperform(readings: dict) -> list[str]:
-    """The rules that outperform the scale rule, in candidate order."""
+    """The models that outperform the scale model, in candidate order."""
     return [name for name in CANDIDATE_ORDER
             if name != desc.BASELINE and readings[name]["paired_baseline"]["q05"] > 0]
 
@@ -389,9 +392,9 @@ def selection_metrics(family: str, run_dir: Path, done: dict) -> dict:
             "baseline": desc.BASELINE,
             "baseline_score": score[desc.BASELINE],
             "score": score,
-            "outperform_the_scale_rule": beaters,
-            "outperform_the_scale_rule_unweighted": outperform(unweighted),
-            "hypothesis_2": "supported" if beaters else "refuted",
+            "outperform_the_scale_model": beaters,
+            "outperform_the_scale_model_unweighted": outperform(unweighted),
+            "hypothesis_2": "supported" if beaters else "not supported",
             "seconds": time.time() - t0,
             "candidate_order": CANDIDATE_ORDER,
             "artifacts": {"candidates": write_csv(run_dir, "candidates", candidates_table),
@@ -406,9 +409,9 @@ def cmd_selection(family: str, done: dict) -> dict:
     metrics = run(EXPERIMENT, selection_config(family),
                   lambda config, run_dir: selection_metrics(family, run_dir, done),
                   done=done)
-    print(f"{SELECTION} {family}: the scale rule at rho "
+    print(f"{SELECTION} {family}: the scale model at rho "
           f"{metrics['baseline_score']:+.4f}; outperformed by "
-          f"{metrics['outperform_the_scale_rule'] or 'no other rule'}; hypothesis 2 "
+          f"{metrics['outperform_the_scale_model'] or 'no other model'}; hypothesis 2 "
           f"{metrics['hypothesis_2']}", flush=True)
     return metrics
 

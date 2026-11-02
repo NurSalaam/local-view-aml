@@ -9,6 +9,8 @@ payment; under network sight the row rule's two copies of a payment between
 banks are identical, so the pooled table carries the same information without
 counting such a payment twice) is cached as parquet under
 ``data/interim/features``. Later stages build any missing table on first use.
+The datasets are the six of the study and the eleven other released AMLgentex
+datasets, which Experiment 1 alone measures (``RELEASES``).
 
 Usage:  uv run python scripts/extract.py [dataset ...]
 """
@@ -23,12 +25,14 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+import fetch_amlgentex_released
 from m.features import extract, graph_feature_names, usd_rate_table, OWN_FIELDS
 from m.runlog import REPO_ROOT
 from m.worlds import amlgentex, amlworld, transxion
 
 CACHE = REPO_ROOT / "data" / "interim" / "features"
 AMLGENTEX_DATASET = "sweden_100K_easy"
+RELEASES = sorted(n for n in fetch_amlgentex_released.PINS if n != AMLGENTEX_DATASET)
 
 DATASETS = {
     "HI-Small": ("amlworld", "HI-Small"),
@@ -37,7 +41,7 @@ DATASETS = {
     "LI-Medium": ("amlworld", "LI-Medium"),
     "transxion": ("transxion", "-"),
     AMLGENTEX_DATASET: ("amlgentex", AMLGENTEX_DATASET),
-}
+} | {name: ("amlgentex", name) for name in RELEASES}
 
 FEATURE_COLUMNS = OWN_FIELDS + graph_feature_names()
 

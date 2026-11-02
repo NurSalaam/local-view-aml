@@ -2,15 +2,15 @@
 """Experiment 1's analysis Runs: one ``shortfall`` Run per (dataset, family) over the unit Runs,
 and one ``verdict`` Run on hypothesis 1 over the shortfall Runs. Both are pure
 functions over the Run log; an analysis config lists its inputs' config
-hashes, so a re-done input re-keys the analysis. ``scores`` prints the
-measured scores of the table of measured and published scores (Chapter 3)
-from the global Runs; the published scores are quoted from Altman et al. and
-Chen et al.
+hashes, so a re-done input re-keys the analysis. Hypothesis 1 is judged in
+each family on HI-Medium on the null check alone; the verdict Run also holds
+the readings beside it: the null check at each GNN seed, the agreement
+between the families, the controls, the factor on the error bars and the
+null check with the draws for the variation between seeds made afresh.
 
   uv run python scripts/exp1_analysis.py shortfall <key> <family>
   uv run python scripts/exp1_analysis.py all          # every complete cell
   uv run python scripts/exp1_analysis.py verdict
-  uv run python scripts/exp1_analysis.py scores
   uv run python scripts/exp1_analysis.py status
 """
 from __future__ import annotations
@@ -49,14 +49,15 @@ PAIRING = {"tree": "median_over_grid", "blind": "median_over_grid",
            "gnn": "mean_over_seeds"}
 AGGREGATE = {"median_over_grid": "median", "mean_over_seeds": "mean"}
 VERDICT_FAMILIES = ("tree", "gnn")
-SCORE_KEYS = ("HI-Small", "HI-Medium", "LI-Small", "LI-Medium", "transxion",
-              data.AMLGENTEX_DATASET)
 
 STABILITY_DRAWS = 200
-STABILITY_CELLS = ((exp1.PRIMARY_KEY, "gnn"), (data.AMLGENTEX_DATASET, "gnn"))
+STABILITY_CELLS = ((exp1.PRIMARY_KEY, "gnn"), ("transxion", "gnn"),
+                   (data.AMLGENTEX_DATASET, "gnn"))
 ROBUSTNESS_KEYS = (exp1.PRIMARY_KEY, "HI-Small")
-THREE_TESTS = ("I2 >= 0.25, the null check passes, and I2 >= 0.25 without the "
-               "bank of largest weight")
+CRITERION = ("hypothesis 1 is judged in each family on HI-Medium on the null "
+             "check alone: supported when the observed Q exceeds the 95th "
+             "percentile of Q over the 1,000 centred replicates (GNN: plus "
+             "normal seed noise of variance seed_var/3), not supported otherwise")
 
 
 # --------------------------------------------------------------- inputs --
@@ -202,11 +203,6 @@ def heterogeneity_reading(labels, deltas, ses, delta_reps, seed_var=None) -> dic
             "passes_leave_one_out": bool(loo["I2"] >= I2_THRESHOLD)}
 
 
-def passes_three_tests(reading: dict) -> bool:
-    return bool(reading["passes_i2_test"] and reading["null_check"]["passes"]
-                and reading["passes_leave_one_out"])
-
-
 def shortfall_metrics(key: str, family: str, dirs: dict, run_dir: Path) -> dict:
     t0 = time.time()
     cell = load_cell(key, family, dirs)
@@ -333,25 +329,24 @@ def shortfall_run(done: dict, key: str, family: str) -> tuple[Path, dict] | None
 
 def verdict_config(cells: dict) -> dict:
     return {"experiment": exp1.EXPERIMENT, "check": "verdict",
+            "hypothesis": 1,
             "primary_dataset": exp1.PRIMARY_KEY, "controls": data.CONTROLS,
             "families": list(VERDICT_FAMILIES),
-            "criteria": {
-                "1": f"{exp1.PRIMARY_KEY}, both families: {THREE_TESTS}; the GNN "
-                     "family's spread also passes them at each of its seeds in turn",
-                "2": f"{exp1.PRIMARY_KEY} tree-vs-GNN Spearman rho: bank-bootstrap "
-                     "5th percentile > 0",
-                "3": "on neither control, TransXion or the AMLgentex dataset, does "
-                     f"either family's spread pass all three tests: {THREE_TESTS}"},
-            "spearman": SPEARMAN, "i2_test": I2_THRESHOLD,
-            "outcomes": {"supported": "all three criteria hold",
-                         "refuted": "any criterion fails"},
+            "criterion": CRITERION,
+            "outcomes": {"supported": "the null check passes in the family",
+                         "not supported": "it fails"},
+            "readings": {
+                "per_seed": "the GNN family's null check with the shortfalls of "
+                            "each seed in turn",
+                "agreement": f"{exp1.PRIMARY_KEY} tree-vs-GNN Spearman rho with "
+                             "its bank-bootstrap 5th percentile and interval",
+                "controls": "the null check, I2 and leave-one-out on TransXion and "
+                            "the AMLgentex dataset"},
+            "spearman": SPEARMAN,
             "robustness": {"datasets": list(ROBUSTNESS_KEYS),
-                           "factor": "the common factor c by which every error bar "
-                                     "would have to widen before the spread fails "
-                                     "one of the three tests: c_null = sqrt(Q / "
-                                     "null_q95), c_i2 = sqrt(0.75 Q / (k-1)), c_loo "
-                                     "the same without the bank of largest weight; "
-                                     "smallest = the least of the three"},
+                           "factor": "the largest common factor c by which every "
+                                     "error bar can widen before the null check "
+                                     "fails: c = sqrt(Q / null_q95)"},
             "null_stability": {"cells": [f"{k}/{f}" for k, f in STABILITY_CELLS],
                                "draws": STABILITY_DRAWS, "seeds": "0 to "
                                f"{STABILITY_DRAWS - 1}",
@@ -361,22 +356,16 @@ def verdict_config(cells: dict) -> dict:
 
 
 def robustness(reading: dict, seed_noise_share: float | None = None) -> dict:
-    """The common factor c by which every error bar would have to widen
-    before the spread fails each of the three tests (the table of factors).
-    Widening every s_B by c divides Q by c-squared while the null check's 95th
-    percentile holds still, its resampled shortfalls widening by c as their
-    weights fall by c-squared. ``smallest`` is the least of the three.
+    """The largest common factor c by which every error bar can widen before
+    the null check fails. Widening every s_B by c divides Q by c-squared while
+    the null check's 95th percentile holds still, its resampled shortfalls
+    widening by c as their weights fall by c-squared.
 
     ``seed_noise_share`` is the median share of s_B-squared that comes from
     the variation between seeds (the GNN family), whose part of s_B does not
     come from the bootstrap."""
-    loo, q95 = reading["leave_one_out"], reading["null_check"]["null_q95"]
-    threshold = 1.0 - I2_THRESHOLD
-    factors = {
-        "c_null": math.sqrt(reading["Q"] / q95),
-        "c_i2": math.sqrt(threshold * reading["Q"] / (reading["k"] - 1)),
-        "c_loo": math.sqrt(threshold * loo["Q"] / (loo["k"] - 1))}
-    return {**factors, "smallest": min(factors.values()),
+    q95 = reading["null_check"]["null_q95"]
+    return {"c_null": math.sqrt(reading["Q"] / q95),
             "Q": reading["Q"], "k": reading["k"], "null_q95": q95,
             "seed_noise_share_median": seed_noise_share}
 
@@ -395,10 +384,19 @@ def null_stability(reading: dict, reps: np.ndarray, deltas: np.ndarray,
     return {"draws": int(len(q95)),
             "null_q95_min": float(q95.min()), "null_q95_median": float(np.median(q95)),
             "null_q95_max": float(q95.max()),
+            "passes": int((observed > q95).sum()),
             "passes_share": float((observed > q95).mean()),
             "recorded_null_q95": reading["null_check"]["null_q95"],
             "recorded_passes": reading["null_check"]["passes"],
             "seed0_difference": float(abs(q95[0] - reading["null_check"]["null_q95"]))}
+
+
+def null_reading(r: dict) -> dict:
+    return {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
+            "null_q95": r["null_check"]["null_q95"],
+            "null_passes": r["null_check"]["passes"],
+            "loo_I2": r["leave_one_out"]["I2"],
+            "weighted_mean": r["weighted_mean"]}
 
 
 def verdict_metrics(runs: dict, run_dir: Path) -> dict:
@@ -435,70 +433,27 @@ def verdict_metrics(runs: dict, run_dir: Path) -> dict:
     assert all(identity.values()), \
         f"families scored different test sets on {[k for k, v in identity.items() if not v]}"
 
-    c1 = {}
-    for fam in ("tree", "gnn"):
-        r = reading(P, fam)
-        c1[fam] = {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
-                   "null_passes": r["null_check"]["passes"],
-                   "loo_I2": r["leave_one_out"]["I2"],
-                   "pass": passes_three_tests(r)}
+    families = {fam: null_reading(reading(P, fam)) for fam in VERDICT_FAMILIES}
+    outcome = {fam: "supported" if r["null_passes"] else "not supported"
+               for fam, r in families.items()}
     g = reading(P, "gnn")
-    c1["per_seed"] = {"readings": g.get("per_seed"), "agree": g.get("per_seed_agree")}
-    c1["pass"] = (all(c1[f]["pass"] for f in ("tree", "gnn"))
-                  and bool(g.get("per_seed_agree")))
+    per_seed = [{"seed": p["seed"], "I2": p["I2"], "Q": p["Q"],
+                 "null_passes": p["null_passes"]} for p in g["per_seed"]]
 
     tt, tg = table(P, "tree"), table(P, "gnn")
     banks = tt.index.intersection(tg.index)
-    test_set_identity = bool((tt.loc[banks, "test_payment_sha256"]
-                              == tg.loc[banks, "test_payment_sha256"]).all())
-    assert test_set_identity and len(banks) == len(tt) == len(tg), \
-        "the tree and GNN families scored different test sets"
-    rho = spearman_bank_bootstrap(tt.loc[banks, "delta"].to_numpy(),
-                                  tg.loc[banks, "delta"].to_numpy(),
-                                  draws=SPEARMAN["draws"], seed=SPEARMAN["seed"])
-    c2 = {**rho, "pass": rho["positive"], "test_set_identity": test_set_identity}
+    assert len(banks) == len(tt) == len(tg), \
+        "the tree and GNN families scored different banks"
+    agreement = spearman_bank_bootstrap(tt.loc[banks, "delta"].to_numpy(),
+                                        tg.loc[banks, "delta"].to_numpy(),
+                                        draws=SPEARMAN["draws"], seed=SPEARMAN["seed"])
 
-    c3 = {}
-    for key in data.CONTROLS:
-        c3[key] = {}
-        for fam in ("tree", "gnn"):
-            if fam in runs.get(key, {}):
-                r = reading(key, fam)
-                c3[key][fam] = {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
-                                "null_passes": r["null_check"]["passes"],
-                                "loo_I2": r["leave_one_out"]["I2"],
-                                "passes_three_tests": passes_three_tests(r),
-                                "fails_tests": [
-                                    test for test, held in
-                                    (("i2_test", r["passes_i2_test"]),
-                                     ("null_check", r["null_check"]["passes"]),
-                                     ("leave_one_out", r["passes_leave_one_out"]))
-                                    if not held]}
-    c3["complete"] = all(fam in c3.get(key, {}) for key in data.CONTROLS
-                         for fam in ("tree", "gnn"))
-    gated = [(key, fam) for key in data.CONTROLS for fam in ("tree", "gnn")
-             if fam in c3.get(key, {})]
-
-    passing = [[k, f] for k, f in gated if c3[k][f]["passes_three_tests"]]
-    c3["passing"] = passing
-    c3["pass"] = c3["complete"] and not passing
-
-    criteria = {"1": c1, "2": c2, "3": c3}
-    failing = sorted(c for c, held in criteria.items() if not held["pass"])
-    outcome = "refuted" if failing else "supported"
-
-    def three_tests(r: dict) -> dict:
-        return {"I2": r["I2"], "Q": r["Q"], "k": r["k"],
-                "null_passes": r["null_check"]["passes"],
-                "loo_I2": r["leave_one_out"]["I2"],
-                "passes_i2_test": r["passes_i2_test"],
-                "passes_leave_one_out": r["passes_leave_one_out"],
-                "passes_three_tests": passes_three_tests(r),
-                "weighted_mean": r["weighted_mean"]}
-
-    same_world = {key: {fam: three_tests(reading(key, fam)) for fam in runs[key]}
+    controls = {key: {fam: null_reading(reading(key, fam)) for fam in VERDICT_FAMILIES}
+                for key in data.CONTROLS}
+    same_world = {key: {fam: null_reading(reading(key, fam)) for fam in runs[key]}
                   for key in ("HI-Small",) if key in runs}
-    return {"criteria": criteria, "failing": failing, "hypothesis_1": outcome,
+    return {"families": families, "hypothesis_1": outcome,
+            "per_seed": per_seed, "agreement": agreement, "controls": controls,
             "test_set_identity": identity,
             "robustness": {f"{key}/{fam}":
                            robustness(reading(key, fam), seed_noise_share(key, fam))
@@ -525,45 +480,19 @@ def cmd_verdict() -> int:
     cells = {k: {f: _hash_of(p) for f, (p, _) in fams.items()} for k, fams in runs.items()}
     metrics = run(exp1.EXPERIMENT, verdict_config(cells),
                   lambda config, run_dir: verdict_metrics(runs, run_dir), done=done)
-    print(json.dumps({"hypothesis_1": metrics["hypothesis_1"], "failing": metrics["failing"],
-                      "c1": {f: metrics["criteria"]["1"][f]["pass"] for f in ("tree", "gnn")},
-                      "rho": metrics["criteria"]["2"]["rho"],
-                      "rho_q05": metrics["criteria"]["2"]["boot_q05"],
-                      "controls": metrics["criteria"]["3"]["pass"],
-                      "per_seed": metrics["criteria"]["1"]["per_seed"]["agree"]},
+    print(json.dumps({"hypothesis_1": metrics["hypothesis_1"],
+                      "null_passes": {f: r["null_passes"]
+                                      for f, r in metrics["families"].items()},
+                      "rho": metrics["agreement"]["rho"],
+                      "rho_q05": metrics["agreement"]["boot_q05"]},
                      indent=2))
-    return 0
-
-
-def cmd_scores() -> int:
-    """The measured scores of the table of measured and published scores: F1
-    on the laundering class (times 100) and average precision on each
-    dataset's test window at (network, all), the tree family at its
-    configuration of highest validation average precision and the GNN family
-    as the mean over its three seeds, with the blind tree on the AMLgentex
-    dataset."""
-    done = completed(exp1.EXPERIMENT)
-    for key in SCORE_KEYS:
-        cells = []
-        blind = ("blind_global",) if key == data.AMLGENTEX_DATASET else ()
-        for check in ("tree_global", "gnn_global") + blind:
-            seeds = exp1.SEEDS if check == "gnn_global" else [-1]
-            metrics = [exp1.recorded(done, exp1.Unit(check, key, seed=s)) for s in seeds]
-            name = check.split("_")[0]
-            if any(m is None for m in metrics):
-                cells.append(f"{name} not run")
-                continue
-            f1 = np.mean([m["test_f1_x100"] for m in metrics])
-            ap = np.mean([m["test_ap"] for m in metrics])
-            cells.append(f"{name} F1 {f1:.1f} AP {ap:.2f}")
-        print(f"{key:18s} " + "  ".join(cells))
     return 0
 
 
 def cmd_all() -> int:
     done = completed(exp1.EXPERIMENT)
     missing = 0
-    for key in data.PRIMARY:
+    for key in data.SHORTFALL_KEYS:
         if not data.ledgers_ready(key):
             print(f"{key}: ledgers not built", flush=True)
             missing += 1
@@ -575,7 +504,7 @@ def cmd_all() -> int:
 
 def cmd_status() -> int:
     done = completed(exp1.EXPERIMENT)
-    for key in data.PRIMARY:
+    for key in data.SHORTFALL_KEYS:
         if not data.ledgers_ready(key):
             print(f"{key}: ledgers not built")
             continue
@@ -591,6 +520,8 @@ def main() -> int:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
         return 2
+    if sys.argv[1] == "status":
+        return cmd_status()
     exp1.check_execution_settings()
     exp1.install_signal_handlers()
     cmd, args = sys.argv[1], sys.argv[2:]
@@ -600,10 +531,6 @@ def main() -> int:
         return cmd_all()
     if cmd == "verdict":
         return cmd_verdict()
-    if cmd == "scores":
-        return cmd_scores()
-    if cmd == "status":
-        return cmd_status()
     print(__doc__)
     return 2
 

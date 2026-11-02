@@ -1,4 +1,4 @@
-"""The null check of Cochran's Q on two readings, for the appendix to Chapter 4.
+"""The null check of the statistic Q on two readings, for the appendix to Chapter 4.
 
 Data: Experiment 1, the `shortfall` checks for HI-Medium's tree
 family and for the GNN family on `sweden_100K_easy` (the AMLgentex dataset).

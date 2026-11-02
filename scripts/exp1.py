@@ -9,10 +9,10 @@ launcher resumes where it stopped and a finished unit is never recomputed.
 The tree and GNN families are fitted in the two scenarios of the shortfall:
 ``solo``, the bank's own detector at (ledger, own), and ``global``, the
 detector with the global view at (network, all). Both run on HI-Medium,
-HI-Small and the two controls; LI-Small and LI-Medium take the global
-scenario alone, for the comparison with published scores. The blind tree
-runs solo at every qualifying bank of HI-Medium and global on HI-Medium and
-the AMLgentex dataset.
+HI-Small, the two controls and the eleven other released AMLgentex datasets;
+LI-Small and LI-Medium take the global scenario alone, for the checks on the
+measurement. The payment-only tree (``blind``) runs solo at every qualifying
+bank of HI-Medium and global on the six datasets of the study.
 
   uv run python scripts/exp1.py plan                # jobs still to run
   uv run python scripts/exp1.py run <unit> [...]    # execute units in-process
@@ -89,8 +89,9 @@ GNN = GNNConfig(hidden=64, embed_dim=8, fanout=(10, 10), batch_size=4096,
 ROSTER_RULE = {"min_test_pos": data.MIN_TEST_POS}
 FAMILIES = ("tree", "blind", "gnn")
 COLUMNS = {"tree": FEATURE_COLUMNS, "blind": OWN_FIELDS}
-BLIND_CHECKS = {"HI-Medium": ("blind_solo", "blind_global"),
-                data.AMLGENTEX_DATASET: ("blind_global",)}
+BLIND_CHECKS = {"HI-Medium": ("blind_solo", "blind_global")} | {
+    key: ("blind_global",) for key in ("HI-Small", "LI-Small", "LI-Medium", "transxion",
+                                       data.AMLGENTEX_DATASET)}
 
 GATE_KEY = "HI-Small"
 CODEPATH_GATE = "gnn_codepath_gate"
@@ -105,10 +106,10 @@ MEDIUM = ("HI-Medium", "LI-Medium")
 
 
 def dataset_checks(key: str) -> tuple[str, ...]:
-    """The unit checks run on one dataset. The blind tree runs where the
-    thesis reads it: solo and global on HI-Medium (pairing against each
-    scenario's own best configuration, and Experiment 2's own-pool placebo),
-    global on the AMLgentex dataset (the comparison with published scores)."""
+    """The unit checks run on one dataset. The payment-only tree runs where
+    the thesis reads it: solo and global on HI-Medium (each scenario at its
+    own best configuration, and Experiment 2's placebo), global on each of the
+    six datasets of the study (the internal assessment)."""
     trained = (("tree_global", "gnn_global") if key in data.ANCHOR_ONLY else
                ("tree_solo", "tree_global", "gnn_solo", "gnn_global"))
     return trained + BLIND_CHECKS.get(key, ())
@@ -861,8 +862,10 @@ def dataset_jobs(key: str, done: dict, exclude: set[str]) -> dict[str, list[Job]
 def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     """Every job still to run, in launch priority (the
     tree family and the gates lead, HI-Medium's GNN global seeds follow,
-    LI-Medium last)."""
-    per = {key: dataset_jobs(key, done, exclude) for key in data.PRIMARY + data.ANCHOR_ONLY}
+    LI-Medium last among the six datasets of the study, the other released
+    AMLgentex datasets after it, their GNN family trailing)."""
+    per = {key: dataset_jobs(key, done, exclude)
+           for key in data.PRIMARY + data.ANCHOR_ONLY + data.RELEASES}
     lead = ["HI-Small", "HI-Medium", "transxion", data.AMLGENTEX_DATASET, "LI-Small"]
 
     def take(keys, kind):
@@ -890,6 +893,12 @@ def plan_jobs(done: dict, exclude: set[str] = frozenset()) -> list[Job]:
     for kind in ("ledgers", "tree_solo", "tree_global", "gnn_solo", "gnn_inputs",
                  "gnn_global"):
         queue += take(("LI-Medium",), kind)
+    for key in data.RELEASES:
+        queue += take((key,), "ledgers") + take((key,), "tree_solo") \
+            + take((key,), "tree_global")
+    for key in data.RELEASES:
+        for kind in ("gnn_inputs", "gnn_global", "gnn_solo"):
+            queue += take((key,), kind)
     seen: set[str] = set()
     ordered = []
     for job in queue:
